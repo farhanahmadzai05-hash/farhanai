@@ -56,7 +56,7 @@ The logo is `public/icon.svg` (the page) and `public/favicon.ico` (the desktop s
 
 ### Background music
 
-The music note button at the top of the page turns calm background music on and off. Browsers block sound until a visitor clicks something, so music never starts by itself on a first visit. The page remembers each visitor's choice.
+Background music is on by default, and the music note button at the top of the page turns it off and on. The page tries to start the music straight away, but most browsers block sound until a visitor clicks, taps or types, so it usually starts at their first click. If a visitor turns the music off, the page remembers that.
 
 The built-in music is composed live in the browser by `public/music.js`. It's original and contains no audio file, so there's nothing to license.
 

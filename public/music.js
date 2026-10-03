@@ -5,8 +5,10 @@
 // ambient track that it composes live in the browser, so there's no audio
 // file and nothing to license.
 //
-// Browsers only allow sound after the visitor clicks or taps, so music never
-// starts by itself on a first visit. The on/off choice is remembered.
+// Music is on by default. The page tries to start it straight away; most
+// browsers block sound until the visitor interacts, so if that's blocked it
+// starts on their first click, tap, key press or when they focus the chat box.
+// Turning it off with the button is remembered.
 (() => {
   const button = document.getElementById("music");
   const STORAGE_KEY = "farhanai-music";
@@ -130,7 +132,9 @@
 
     return {
       async start() {
-        await ctx.resume();
+        // Browsers keep audio suspended until the visitor interacts with the page.
+        await Promise.race([ctx.resume(), new Promise((r) => setTimeout(r, 300))]);
+        if (ctx.state !== "running") throw new Error("Audio blocked until the visitor interacts");
         nextChordAt = nextMelodyAt = ctx.currentTime + 0.1;
         schedule();
         timer = setInterval(schedule, 1000);
@@ -155,8 +159,9 @@
     button.title = on ? "Turn music off" : "Play background music";
   }
 
+  // Returns true if music is now playing.
   async function turnOn() {
-    if (playing) return;
+    if (playing) return true;
     playing = true;
     show(true);
     try {
@@ -165,9 +170,11 @@
         player = file ? filePlayer(file) : ambientPlayer();
       }
       await player.start();
+      return true;
     } catch {
       playing = false;
       show(false);
+      return false;
     }
   }
 
@@ -189,19 +196,32 @@
     }
   });
 
-  // If music was on last time, start it again at the visitor's first click or key press.
-  if (remembered() === "on") {
+  // Music is on unless the visitor turned it off before. Try to play right away,
+  // and if the browser blocks that, start at the visitor's first interaction.
+  const START_EVENTS = ["pointerdown", "keydown", "touchend", "focusin"];
+  function startOnFirstInteraction() {
+    waiting = true;
+    show(true);
+    const resume = async (e) => {
+      if (e.target.closest?.("#music")) return; // the button handles itself
+      if (!waiting) return stopListening();
+      if (await turnOn()) {
+        waiting = false;
+        stopListening();
+      } else if (waiting) {
+        show(true);
+      }
+    };
+    const stopListening = () => START_EVENTS.forEach((t) => window.removeEventListener(t, resume, true));
+    START_EVENTS.forEach((t) => window.addEventListener(t, resume, true));
+  }
+
+  if (remembered() !== "off") {
     show(true);
     waiting = true;
-    const resume = (e) => {
-      if (e.target.closest?.("#music")) return; // the button handles itself
-      window.removeEventListener("pointerdown", resume);
-      window.removeEventListener("keydown", resume);
-      if (!waiting) return;
-      waiting = false;
-      turnOn();
-    };
-    window.addEventListener("pointerdown", resume);
-    window.addEventListener("keydown", resume);
+    turnOn().then((ok) => {
+      if (ok) waiting = false;
+      else if (waiting) startOnFirstInteraction();
+    });
   }
 })();
