@@ -155,12 +155,34 @@ main::-webkit-scrollbar-thumb { background: var(--surface-2); border-radius: 8px
 .wait-note { font-size: 13px; color: var(--muted); margin-top: 4px; }
 
 /* Welcome screen */
-.empty { margin: auto 0; text-align: center; padding: 20px 0 40px; animation: rise 0.5s ease; }
-.empty[hidden] { display: none; }
-.big-logo { width: 76px; height: 76px; border-radius: 22px; box-shadow: 0 10px 40px rgba(139, 92, 246, 0.45); animation: float 4s ease-in-out infinite; }
+/* Welcome message and creator note at the top of every chat */
+.intro { display: flex; flex-direction: column; gap: 14px; padding-top: 8px; animation: rise 0.5s ease; }
+.hero { text-align: center; margin: 4px 0 6px; }
+.big-logo { width: 68px; height: 68px; border-radius: 20px; box-shadow: 0 10px 40px rgba(139, 92, 246, 0.45); animation: float 4s ease-in-out infinite; }
 @keyframes float { 50% { transform: translateY(-6px); } }
-.empty h2 { font-size: clamp(22px, 5vw, 28px); font-weight: 700; letter-spacing: -0.02em; margin: 22px 0 24px; }
-.chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; max-width: 560px; margin: 0 auto; }
+.creator-note {
+  margin-left: 40px;
+  max-width: min(80%, 620px);
+  padding: 14px 18px;
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, rgba(76, 116, 224, 0.14), rgba(139, 92, 246, 0.14));
+  border: 1px solid rgba(139, 92, 246, 0.35);
+}
+.creator-note[hidden], .chips[hidden] { display: none; }
+.creator-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #b9a4ff;
+  margin-bottom: 6px;
+}
+.creator-note p, .creator-note ul { margin: 0 0 0.5em; }
+.creator-note ul { padding-left: 1.2em; }
+.creator-note li { margin: 0.25em 0; }
+.creator-note > div:last-child > :last-child { margin-bottom: 0; }
+.creator-note strong { color: #fff; }
+.chips { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0 0 40px; }
 .chip {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -228,6 +250,7 @@ textarea::placeholder { color: var(--muted); }
   .ghost { padding: 9px; }
   .bubble { max-width: 85%; }
   .avatar { display: none; }
+  .creator-note, .chips { margin-left: 0; max-width: 85%; }
   .hint { display: none; }
   main { padding-top: 16px; }
 }

@@ -30,10 +30,17 @@
   <div id="banner" class="banner" hidden></div>
 
   <main id="messages" aria-live="polite">
-    <section class="empty" id="empty">
-      <img src="/icon.svg" alt="" class="big-logo">
-      <h2 id="greeting">Hi, I'm Farhan AI. Ask me anything!</h2>
-      <div class="chips">
+    <section class="intro" id="intro">
+      <div class="hero"><img src="/icon.svg" alt="" class="big-logo"></div>
+      <div class="row assistant">
+        <img src="/icon.svg" alt="" class="avatar">
+        <div class="bubble" id="welcome"></div>
+      </div>
+      <div class="creator-note" id="creator-note" hidden>
+        <div class="creator-label">A message from the creator</div>
+        <div id="creator-message"></div>
+      </div>
+      <div class="chips" id="chips">
         <button type="button" class="chip">Tell me a fun fact</button>
         <button type="button" class="chip">Help me write a message</button>
         <button type="button" class="chip">Explain something simply</button>

@@ -120,7 +120,7 @@ test("online mode streams a reply from Groq", async (t) => {
   assert.equal(done.content, "Hello from Groq");
   assert.equal(seen.url, "/chat/completions");
   assert.equal(seen.auth, "Bearer test-key");
-  assert.equal(seen.body.model, "llama-3.3-70b-versatile");
+  assert.equal(seen.body.model, "openai/gpt-oss-120b");
   assert.equal(seen.body.messages[0].role, "system");
 });
 
@@ -145,4 +145,32 @@ test("limits how fast one visitor can send messages", async (t) => {
     body: JSON.stringify({ messages: [{ role: "user", content: "Hi" }] }),
   });
   assert.equal(res.status, 429);
+});
+
+test("online mode switches to an available model when the chosen one is gone", async (t) => {
+  const tried = [];
+  const groq = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    if (req.url === "/models") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ data: [{ id: "whisper-large-v3" }, { id: "openai/gpt-oss-20b" }] }));
+    }
+    const { model } = JSON.parse(body);
+    tried.push(model);
+    if (model !== "openai/gpt-oss-20b") {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ error: { message: `The model \`${model}\` does not exist or you do not have access to it.` } }));
+    }
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.end(`data: ${JSON.stringify({ choices: [{ delta: { content: "Hi!" } }] })}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise((resolve) => groq.listen(0, resolve));
+  t.after(() => groq.close());
+  const base = await startApp(t, { GROQ_API_KEY: "k", GROQ_MODEL: "llama-3.3-70b-versatile", GROQ_URL: `http://127.0.0.1:${groq.address().port}` });
+
+  const done = JSON.parse(/event: done\ndata: (.*)/.exec(await chat(base))[1]);
+  assert.equal(done.content, "Hi!");
+  await chat(base);
+  assert.deepEqual(tried, ["llama-3.3-70b-versatile", "openai/gpt-oss-20b", "openai/gpt-oss-20b"]);
 });

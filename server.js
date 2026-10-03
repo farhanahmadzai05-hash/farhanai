@@ -22,14 +22,16 @@ try {
 }
 
 const APP_NAME = settings.appName || "Chatbot";
-const GREETING = settings.greeting || "Ask me anything to get started.";
+// The first message visitors see, and an optional note from the creator under it (Markdown).
+const WELCOME = settings.welcome || settings.greeting || "Hi! Ask me anything to get started.";
+const CREATOR_MESSAGE = settings.creatorMessage || "";
 const PORT = Number(process.env.PORT) || Number(settings.port) || 3000;
 // Online mode: a website host sets GROQ_API_KEY, and replies come from Groq.
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const ONLINE = Boolean(GROQ_API_KEY);
 const GROQ_URL = (process.env.GROQ_URL || "https://api.groq.com/openai/v1").replace(/\/$/, "");
 const MODEL = ONLINE
-  ? process.env.GROQ_MODEL || settings.onlineModel || "llama-3.3-70b-versatile"
+  ? process.env.GROQ_MODEL || settings.onlineModel || "openai/gpt-oss-120b"
   : process.env.OLLAMA_MODEL || settings.model || "llama3.2";
 const OLLAMA_URL = (process.env.OLLAMA_URL || "http://127.0.0.1:11434").replace(/\/$/, "");
 const SYSTEM_PROMPT =
@@ -113,13 +115,24 @@ async function* streamOllama(messages, signal) {
 }
 
 // Yields the reply from Groq's OpenAI-compatible API piece by piece.
-async function* streamGroq(messages, signal) {
-  let upstream;
+// Groq models we'd like to use online, best first. If the chosen model isn't
+// available to your Groq account, the site switches to one of these by itself.
+const GROQ_PREFERRED = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+let groqModel = MODEL;
+
+async function pickAvailableGroqModel() {
+  const res = await fetch(`${GROQ_URL}/models`, { headers: { Authorization: `Bearer ${GROQ_API_KEY}` } });
+  const ids = ((await res.json().catch(() => ({}))).data || []).map((m) => m.id);
+  const chat = ids.filter((id) => !/whisper|tts|guard|playai|orpheus/i.test(id));
+  return GROQ_PREFERRED.find((id) => chat.includes(id)) || chat[0];
+}
+
+async function callGroq(messages, signal) {
   try {
-    upstream = await fetch(`${GROQ_URL}/chat/completions`, {
+    return await fetch(`${GROQ_URL}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_API_KEY}` },
-      body: JSON.stringify({ model: MODEL, stream: true, messages }),
+      body: JSON.stringify({ model: groqModel, stream: true, messages }),
       signal,
     });
   } catch (err) {
@@ -127,8 +140,27 @@ async function* streamGroq(messages, signal) {
     console.log(`Can't reach Groq: ${err.message}`);
     throw new Error("Can't reach the AI service right now. Please try again in a moment.");
   }
+}
+
+// Yields the reply from Groq's OpenAI-compatible API piece by piece.
+async function* streamGroq(messages, signal) {
+  let upstream = await callGroq(messages, signal);
+  let detail = "";
+  if (upstream.status === 404 || upstream.status === 400) {
+    detail = (await upstream.json().catch(() => ({}))).error?.message || "";
+    // The model was retired or isn't on this account's plan: switch to one that is.
+    if (/model/i.test(detail) && /(not exist|not have access|decommissioned|deprecated|not found)/i.test(detail)) {
+      const replacement = await pickAvailableGroqModel().catch(() => null);
+      if (replacement && replacement !== groqModel) {
+        console.log(`Groq model "${groqModel}" isn't available (${detail}). Switching to "${replacement}".`);
+        groqModel = replacement;
+        upstream = await callGroq(messages, signal);
+        detail = "";
+      }
+    }
+  }
   if (!upstream.ok) {
-    const detail = (await upstream.json().catch(() => ({}))).error?.message || `status ${upstream.status}`;
+    detail ||= (await upstream.json().catch(() => ({}))).error?.message || `status ${upstream.status}`;
     console.log(`Groq error (${upstream.status}): ${detail}`);
     if (upstream.status === 401) throw new Error("The website's Groq API key is wrong or missing. Check GROQ_API_KEY in the host's settings.");
     if (upstream.status === 429) throw new Error("Lots of people are chatting right now. Please wait a minute and try again.");
@@ -246,7 +278,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/api/chat") return handleChat(req, res);
   if (req.method === "GET" && url.pathname === "/api/config") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    return res.end(JSON.stringify({ appName: APP_NAME, greeting: GREETING, model: MODEL, online: ONLINE }));
+    return res.end(JSON.stringify({ appName: APP_NAME, welcome: WELCOME, creatorMessage: CREATOR_MESSAGE, model: MODEL, online: ONLINE }));
   }
   if (req.method === "GET" && url.pathname === "/api/status") {
     res.writeHead(200, { "Content-Type": "application/json" });

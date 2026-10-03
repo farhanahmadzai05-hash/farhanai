@@ -1,6 +1,6 @@
 // Chat page: keeps the conversation, sends it to /api/chat, and renders the streamed reply.
 const messagesEl = document.getElementById("messages");
-const emptyEl = document.getElementById("empty");
+const chipsEl = document.getElementById("chips");
 const form = document.getElementById("composer");
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
@@ -20,7 +20,11 @@ fetch("/api/config")
   .then((c) => {
     document.title = c.appName;
     document.getElementById("app-name").textContent = c.appName;
-    document.getElementById("greeting").textContent = c.greeting;
+    document.getElementById("welcome").innerHTML = renderMarkdown(c.welcome);
+    if (c.creatorMessage) {
+      document.getElementById("creator-message").innerHTML = renderMarkdown(c.creatorMessage);
+      document.getElementById("creator-note").hidden = false;
+    }
     document.getElementById("model").textContent = c.online ? "online" : `${c.model} · on your PC`;
     onlineSite = c.online;
     input.placeholder = `Message ${c.appName}…`;
@@ -78,7 +82,7 @@ function renderMarkdown(text) {
 
 // Adds a chat bubble and returns it. Assistant bubbles get the app's logo beside them.
 function addMessage(role, text = "") {
-  emptyEl.hidden = true;
+  chipsEl.hidden = true;
   const row = document.createElement("div");
   row.className = `row ${role}`;
   if (role === "assistant") {
@@ -211,8 +215,8 @@ input.addEventListener("input", () => {
 newChatBtn.addEventListener("click", () => {
   if (busy) return;
   history = [];
-  messagesEl.querySelectorAll(".row").forEach((m) => m.remove());
-  emptyEl.hidden = false;
+  messagesEl.querySelectorAll(":scope > .row").forEach((m) => m.remove());
+  chipsEl.hidden = false;
   input.focus();
 });
 

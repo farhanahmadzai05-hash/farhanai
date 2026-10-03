@@ -2,7 +2,7 @@
 
 When you're done, Farhan AI will be a real website that works all the time, even when your PC is off. You'll use three free services:
 
-- **Groq**: the AI brain. It runs a bigger Llama model (Llama 3.3 70B), so replies are smarter and faster than on your PC.
+- **Groq**: the AI brain. It runs a much bigger model (OpenAI's free GPT-OSS 120B), so replies are smarter and faster than on your PC.
 - **GitHub**: stores your app's files.
 - **Render**: runs your app as a website at an address like `https://farhanai.onrender.com`.
 
@@ -79,4 +79,4 @@ After you buy one, go to Render, open **Settings**, then **Custom Domains**. Add
 
 - Anyone who visits can chat, and their messages are sent to Groq to get answers.
 - Groq's free plan has a daily limit. If a lot of people use it in one day, Farhan AI asks them to try again later. To stop one person from using it all up, each visitor can send up to 30 messages every 10 minutes.
-- To use a different Groq model, change `onlineModel` in `settings.json`. The models are listed at https://console.groq.com/docs/models. `llama-3.1-8b-instant` is faster and has higher limits.
+- To use a different Groq model, change `onlineModel` in `settings.json`. The models are listed at https://console.groq.com/docs/models. `openai/gpt-oss-20b` is faster and has higher limits. If the model you pick isn't available, the site switches to one that is by itself.
