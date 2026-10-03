@@ -48,6 +48,7 @@
     return {
       start: () => audio.play(),
       stop: () => audio.pause(),
+      volume: (v) => (audio.volume = v),
     };
   }
 
@@ -142,6 +143,11 @@
         master.gain.setValueAtTime(master.gain.value, ctx.currentTime);
         master.gain.linearRampToValueAtTime(VOLUME, ctx.currentTime + 3);
       },
+      volume(v) {
+        master.gain.cancelScheduledValues(ctx.currentTime);
+        master.gain.setValueAtTime(master.gain.value, ctx.currentTime);
+        master.gain.linearRampToValueAtTime(v, ctx.currentTime + 0.4);
+      },
       stop() {
         clearInterval(timer);
         master.gain.cancelScheduledValues(ctx.currentTime);
@@ -153,6 +159,13 @@
   }
 
   const songFile = findSongFile();
+
+  // Voice mode turns the music right down while you talk and while Farhan AI speaks.
+  let ducked = false;
+  window.addEventListener("farhanai-duck", (e) => {
+    ducked = e.detail;
+    if (playing) player?.volume(ducked ? VOLUME * 0.12 : VOLUME);
+  });
 
   function show(on) {
     button.setAttribute("aria-pressed", String(on));
@@ -170,6 +183,7 @@
         player = file ? filePlayer(file) : ambientPlayer();
       }
       await player.start();
+      if (ducked) player.volume(VOLUME * 0.12);
       return true;
     } catch {
       playing = false;

@@ -54,6 +54,10 @@ Save the file, close the black window, and start the app again to see your chang
 
 The logo is `public/icon.svg` (the page) and `public/favicon.ico` (the desktop shortcut).
 
+### Voice mode
+
+Tap **Voice** at the top of the page, or swipe sideways, to switch from Chat to Voice. Tap the glowing orb and talk: Farhan AI listens, answers out loud, then listens again until you tap the orb to stop. Voice chats also show up in Chat. It uses the speech features built into the browser, so it's free; it works in Chrome, Edge and Safari (not Firefox), and the browser asks for permission to use the mic the first time.
+
 ### Background music
 
 Background music is on by default, and the music note button at the top of the page turns it off and on. The page tries to start the music straight away, but most browsers block sound until a visitor clicks, taps or types, so it usually starts at their first click. If a visitor turns the music off, the page remembers that.

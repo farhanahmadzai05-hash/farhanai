@@ -107,7 +107,9 @@ function setBusy(value) {
   sendBtn.disabled = value;
 }
 
-async function send(text) {
+// hooks (used by voice mode): onText(chunk) for each piece of the reply, onError(message).
+// Returns the full reply, or null if something went wrong.
+async function send(text, hooks = {}) {
   history.push({ role: "user", content: text });
   addMessage("user", text);
   const replyEl = addMessage("assistant");
@@ -158,6 +160,7 @@ async function send(text) {
         if (event === "text") {
           stopWaiting();
           replyText += data.text;
+          hooks.onText?.(data.text);
           replyEl.innerHTML = renderMarkdown(replyText);
           messagesEl.scrollTop = messagesEl.scrollHeight;
         } else if (event === "done") {
@@ -184,11 +187,13 @@ async function send(text) {
             : "Error: can't reach the chatbot server. Double-click start-chatbot.bat and keep its black window open."
           : `Error: ${err.message}`;
     checkStatus();
+    hooks.onError?.(replyEl.textContent.replace(/^Error: /, ""));
   } finally {
     stopWaiting();
-      setBusy(false);
-    input.focus();
+    setBusy(false);
+    if (!hooks.onText) input.focus();
   }
+  return finished ? replyText : null;
 }
 
 form.addEventListener("submit", (e) => {
@@ -214,6 +219,7 @@ input.addEventListener("input", () => {
 
 newChatBtn.addEventListener("click", () => {
   if (busy) return;
+  window.dispatchEvent(new Event("farhanai-new-chat"));
   history = [];
   messagesEl.querySelectorAll(":scope > .row").forEach((m) => m.remove());
   chipsEl.hidden = false;
