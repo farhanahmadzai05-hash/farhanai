@@ -608,3 +608,4 @@ body.entering .glow { animation: splash-fade-in 1.4s ease both; }
   .splash-title .glow { opacity: var(--glow); }
   body.entering header, body.entering .intro > *, body.entering form, body.entering .glow { animation: none; }
 }
+.voice[data-state="error"] .voice-status { max-width: 540px; font-size: 15.5px; font-weight: 500; line-height: 1.5; color: #ffc2bb; }

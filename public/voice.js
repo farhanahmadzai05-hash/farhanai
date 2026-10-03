@@ -115,16 +115,73 @@
     setState("idle");
   }
 
-  function listen() {
+  const ERRORS = {
+    blocked:
+      "The microphone is blocked for this site. Click the lock or settings icon next to the web address, set Microphone to Allow, reload the page and try again.",
+    noMic: "No microphone was found. Plug one in or check your sound settings, then tap the orb.",
+    micBusy:
+      "Your microphone couldn't be opened. Close other apps using it. On Windows, also check Settings, Privacy & security, Microphone, and allow apps and your browser to use it.",
+    service:
+      "This browser's speech service isn't working. That happens in Brave, Opera and some other browsers. Please open the site in Chrome, Edge or Safari.",
+    insecure: "Voice only works on the secure (https) version of the site.",
+    silent:
+      "Your browser didn't pass any sound from the mic. Check the right microphone is selected in your browser and computer settings, then tap the orb.",
+  };
+
+  // Ask for the mic once with a normal permission prompt. This gives clearer errors than
+  // speech recognition does on its own.
+  let micReady = false;
+  async function checkMic() {
+    if (micReady) return null;
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) return ERRORS.insecure;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+      micReady = true;
+      return null;
+    } catch (err) {
+      if (err.name === "NotAllowedError" || err.name === "SecurityError") return ERRORS.blocked;
+      if (err.name === "NotFoundError" || err.name === "OverconstrainedError") return ERRORS.noMic;
+      return ERRORS.micBusy;
+    }
+  }
+
+  function fail(message) {
+    talking = false;
+    setState("error", message);
+  }
+
+  async function listen() {
     const id = session;
     heardEl.textContent = "";
+    setState("listening", "Starting the mic…");
+    const micProblem = await checkMic();
+    if (id !== session) return;
+    if (micProblem) return fail(micProblem);
+
     recognition = new Recognition();
     recognition.lang = navigator.language || "en-GB";
     recognition.interimResults = true;
     recognition.continuous = false;
     let finalText = "";
     let failed = false;
+    let gotAudio = false;
 
+    // If the speech service never starts taking sound, say so instead of waiting forever.
+    const watchdog = setTimeout(() => {
+      if (id !== session || gotAudio) return;
+      failed = true;
+      try {
+        recognition.abort();
+      } catch {}
+      fail(ERRORS.service);
+    }, 6000);
+
+    recognition.onaudiostart = () => {
+      gotAudio = true;
+      if (id === session) setState("listening", "Listening… go ahead");
+    };
+    recognition.onspeechstart = () => id === session && setState("listening", "Hearing you…");
     recognition.onresult = (e) => {
       let interim = "";
       finalText = "";
@@ -132,30 +189,35 @@
       heardEl.textContent = (finalText + interim).trim();
     };
     recognition.onerror = (e) => {
-      if (id !== session) return;
+      clearTimeout(watchdog);
+      if (id !== session || failed) return;
       failed = true;
-      talking = false;
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-        setState("error", "Microphone access is blocked. Allow the mic for this site in your browser, then tap the orb.");
-      } else if (e.error === "no-speech") {
-        setState("idle", "I didn't hear anything. Tap the orb to try again.");
-      } else if (e.error === "network") {
-        setState("error", "Voice needs an internet connection. Check it and tap the orb.");
-      } else if (e.error !== "aborted") {
-        setState("error", "Something went wrong with the mic. Tap the orb to try again.");
-      }
+      if (e.error === "not-allowed") fail(ERRORS.blocked);
+      else if (e.error === "service-not-allowed" || e.error === "network" || e.error === "language-not-supported") fail(ERRORS.service);
+      else if (e.error === "audio-capture") fail(ERRORS.micBusy);
+      else if (e.error === "no-speech") {
+        talking = false;
+        setState("idle", "I didn't hear anything. Tap the orb and speak a bit louder or closer to the mic.");
+      } else if (e.error !== "aborted") fail(`Something went wrong with the mic (${e.error}). Tap the orb to try again.`);
     };
     recognition.onend = () => {
+      clearTimeout(watchdog);
       if (id !== session || failed) return;
       const text = (finalText || heardEl.textContent).trim();
       if (text) ask(text, id);
+      else if (!gotAudio) fail(ERRORS.silent);
       else {
         talking = false;
         setState("idle", "I didn't catch that. Tap the orb to try again.");
       }
     };
-    setState("listening");
-    recognition.start();
+    try {
+      recognition.start();
+      setState("listening", "Listening…");
+    } catch {
+      clearTimeout(watchdog);
+      fail("The mic is still busy. Wait a second and tap the orb again.");
+    }
   }
 
   async function ask(text, id) {
@@ -194,9 +256,11 @@
 
   orb.addEventListener("click", () => {
     if (state === "idle" || state === "error") {
-      // Some phones only allow speech that starts from a tap, so say nothing once now to unlock it.
       synth.cancel();
-      synth.speak(new SpeechSynthesisUtterance(""));
+      // iPhones and iPads only allow speech that starts from a tap, so say nothing once now to unlock it.
+      if (/iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform))) {
+        synth.speak(new SpeechSynthesisUtterance(""));
+      }
       session++;
       talking = true;
       listen();
@@ -215,4 +279,6 @@
   window.addEventListener("pagehide", stopAll);
 
   setState("idle");
+  // Brave pretends to support speech recognition but blocks it, so warn straight away.
+  navigator.brave?.isBrave?.().then((yes) => yes && setState("error", ERRORS.service));
 })();
