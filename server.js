@@ -45,6 +45,11 @@ const STATIC_FILES = {
   "/style.css": ["style.css", "text/css; charset=utf-8"],
   "/icon.svg": ["icon.svg", "image/svg+xml"],
   "/favicon.ico": ["favicon.ico", "image/x-icon"],
+  "/music.js": ["music.js", "text/javascript; charset=utf-8"],
+  // Optional: drop your own song into the public folder with one of these names.
+  "/music.mp3": ["music.mp3", "audio/mpeg"],
+  "/music.m4a": ["music.m4a", "audio/mp4"],
+  "/music.ogg": ["music.ogg", "audio/ogg"],
 };
 
 function readBody(req, limit = 5_000_000) {
@@ -284,13 +289,19 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify(await checkModel()));
   }
-  const file = req.method === "GET" && STATIC_FILES[url.pathname];
-  if (!file) {
+  const file = ["GET", "HEAD"].includes(req.method) && STATIC_FILES[url.pathname];
+  let body;
+  try {
+    body = file && (await readFile(path.join(PUBLIC_DIR, file[0])));
+  } catch {
+    body = null; // e.g. no music file has been added
+  }
+  if (!body) {
     res.writeHead(404, { "Content-Type": "text/plain" });
     return res.end("Not found");
   }
-  res.writeHead(200, { "Content-Type": file[1], "Cache-Control": "no-cache" });
-  res.end(await readFile(path.join(PUBLIC_DIR, file[0])));
+  res.writeHead(200, { "Content-Type": file[1], "Content-Length": body.length, "Cache-Control": "no-cache" });
+  res.end(req.method === "HEAD" ? undefined : body);
 });
 
 // Shares the app on the internet through a free Cloudflare quick tunnel

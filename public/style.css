@@ -74,6 +74,12 @@ header h1 { font-size: 17px; font-weight: 700; margin: 0; letter-spacing: -0.01e
 .ghost svg { width: 16px; height: 16px; }
 .ghost:hover { background: var(--surface-2); }
 .ghost:active { transform: scale(0.97); }
+.actions { display: flex; gap: 8px; }
+.icon-only { padding: 9px; }
+#music .on { display: none; }
+#music[aria-pressed="true"] .on { display: block; }
+#music[aria-pressed="true"] .off { display: none; }
+#music[aria-pressed="true"] { color: #c4b5fd; border-color: rgba(139, 92, 246, 0.5); box-shadow: 0 0 14px rgba(139, 92, 246, 0.35); }
 
 /* Problem banner */
 .banner {

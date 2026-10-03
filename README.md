@@ -54,6 +54,14 @@ Save the file, close the black window, and start the app again to see your chang
 
 The logo is `public/icon.svg` (the page) and `public/favicon.ico` (the desktop shortcut).
 
+### Background music
+
+The music note button at the top of the page turns calm background music on and off. Browsers block sound until a visitor clicks something, so music never starts by itself on a first visit. The page remembers each visitor's choice.
+
+The built-in music is composed live in the browser by `public/music.js`. It's original and contains no audio file, so there's nothing to license.
+
+To use your own song instead, name it `music.mp3` (or `music.m4a` / `music.ogg`) and put it in the `public` folder. On GitHub, open the `public` folder, click **Add file**, then **Upload files**, and commit. The website updates a few minutes later. Only use music you're allowed to share, such as your own or a track marked royalty free. To change the volume, edit `VOLUME` near the top of `public/music.js`.
+
 ## If something goes wrong
 
 - **"Can't reach Ollama"**: open the Ollama app from the Start menu, then send your message again.
