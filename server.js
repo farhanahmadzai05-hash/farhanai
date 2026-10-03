@@ -135,12 +135,12 @@ async function pickAvailableGroqModel() {
   return GROQ_PREFERRED.find((id) => chat.includes(id)) || chat[0];
 }
 
-async function callGroq(messages, signal) {
+async function callGroq(messages, signal, extra = {}) {
   try {
     return await fetch(`${GROQ_URL}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_API_KEY}` },
-      body: JSON.stringify({ model: groqModel, stream: true, messages }),
+      body: JSON.stringify({ model: groqModel, stream: true, messages, ...extra }),
       signal,
     });
   } catch (err) {
@@ -150,9 +150,12 @@ async function callGroq(messages, signal) {
   }
 }
 
-// Yields the reply from Groq's OpenAI-compatible API piece by piece.
-async function* streamGroq(messages, signal) {
-  let upstream = await callGroq(messages, signal);
+// Yields the reply from Groq's OpenAI-compatible API piece by piece: strings for text, and
+// at the end {toolCalls} if the model asked to use a tool (such as web search) instead.
+let toolsWork = true; // switched off if the model on this account can't use tools
+async function* streamGroq(messages, signal, tools) {
+  const extra = () => (tools && toolsWork ? { tools, tool_choice: "auto" } : {});
+  let upstream = await callGroq(messages, signal, extra());
   let detail = "";
   if (upstream.status === 404 || upstream.status === 400) {
     detail = (await upstream.json().catch(() => ({}))).error?.message || "";
@@ -162,9 +165,15 @@ async function* streamGroq(messages, signal) {
       if (replacement && replacement !== groqModel) {
         console.log(`Groq model "${groqModel}" isn't available (${detail}). Switching to "${replacement}".`);
         groqModel = replacement;
-        upstream = await callGroq(messages, signal);
+        upstream = await callGroq(messages, signal, extra());
         detail = "";
       }
+    } else if (tools && toolsWork && /tool/i.test(detail)) {
+      // The model fumbled the search request or can't search: answer without searching.
+      console.log(`Answering without web search this time (${detail}).`);
+      if (/not support/i.test(detail)) toolsWork = false;
+      upstream = await callGroq(messages, signal);
+      detail = "";
     }
   }
   if (!upstream.ok) {
@@ -175,14 +184,139 @@ async function* streamGroq(messages, signal) {
     throw new Error(`The AI service had a problem: ${detail}`);
   }
   // Server-sent events: lines like "data: {...}", ending with "data: [DONE]".
+  const calls = [];
   for await (const line of lines(upstream.body)) {
     if (!line.startsWith("data:")) continue;
     const data = line.slice(5).trim();
-    if (data === "[DONE]") return;
-    const text = JSON.parse(data).choices?.[0]?.delta?.content;
-    if (text) yield text;
+    if (data === "[DONE]") break;
+    const delta = JSON.parse(data).choices?.[0]?.delta || {};
+    if (delta.content) yield delta.content;
+    for (const tc of delta.tool_calls || []) {
+      const call = (calls[tc.index ?? calls.length] ||= { id: "", type: "function", function: { name: "", arguments: "" } });
+      if (tc.id) call.id = tc.id;
+      if (tc.function?.name) call.function.name += tc.function.name;
+      if (tc.function?.arguments) call.function.arguments += tc.function.arguments;
+    }
   }
+  if (calls.length) yield { toolCalls: calls.filter(Boolean) };
 }
+
+// ---------- Web search ----------
+// With a free Tavily key (TAVILY_API_KEY) searches cover the whole web, including today's
+// news, and come with pictures. Without one, Farhan AI searches Wikipedia, which is free and
+// needs no key but isn't up to the minute.
+const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
+const TAVILY_URL = process.env.TAVILY_URL || "https://api.tavily.com/search";
+const WIKI_URL = process.env.WIKI_URL || "https://en.wikipedia.org/w/api.php";
+const MAX_SEARCHES = 3; // per message, to stay inside the free allowance
+
+const WEB_SEARCH_TOOL = {
+  type: "function",
+  function: {
+    name: "web_search",
+    description:
+      "Search the internet for current or factual information: news, sports results and scores, who won something, prices, weather, recent events, people, or anything that may have changed after your training. Returns numbered results with snippets, links and pictures.",
+    parameters: {
+      type: "object",
+      properties: { query: { type: "string", description: "What to search for, like a short Google search" } },
+      required: ["query"],
+    },
+  },
+};
+
+const clip = (text, n) => {
+  const t = String(text || "").replace(/\s+/g, " ").trim();
+  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+};
+
+async function searchTavily(query, signal) {
+  const res = await fetch(TAVILY_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${TAVILY_API_KEY}` },
+    body: JSON.stringify({ query, max_results: 5, include_images: true, include_image_descriptions: true, search_depth: "basic" }),
+    signal,
+  });
+  if (!res.ok) throw new Error(`Tavily search failed (status ${res.status})`);
+  const data = await res.json();
+  return {
+    provider: "web",
+    results: (data.results || []).map((r) => ({
+      title: clip(r.title, 120),
+      url: r.url,
+      snippet: clip(r.content, 700),
+      date: r.published_date || undefined,
+      icon: r.favicon || undefined,
+    })),
+    images: (data.images || [])
+      .map((img) => (typeof img === "string" ? { url: img } : { url: img.url, caption: clip(img.description, 160) }))
+      .filter((img) => /^https:\/\//.test(img.url))
+      .slice(0, 6),
+  };
+}
+
+async function searchWikipedia(query, signal) {
+  const params = new URLSearchParams({
+    action: "query",
+    format: "json",
+    generator: "search",
+    gsrsearch: query,
+    gsrlimit: "4",
+    prop: "pageimages|extracts|info",
+    exintro: "1",
+    explaintext: "1",
+    exchars: "900",
+    piprop: "thumbnail",
+    pithumbsize: "480",
+    inprop: "url",
+  });
+  const res = await fetch(`${WIKI_URL}?${params}`, {
+    headers: { "User-Agent": "FarhanAI/1.0 (https://farhanai.onrender.com)" },
+    signal,
+  });
+  if (!res.ok) throw new Error(`Wikipedia search failed (status ${res.status})`);
+  const pages = Object.values((await res.json()).query?.pages || {}).sort((a, b) => a.index - b.index);
+  return {
+    provider: "wikipedia",
+    results: pages.map((p) => ({ title: p.title, url: p.fullurl, snippet: clip(p.extract, 900), image: p.thumbnail?.source })),
+    images: pages.filter((p) => p.thumbnail?.source).map((p) => ({ url: p.thumbnail.source, caption: p.title })).slice(0, 4),
+  };
+}
+
+async function webSearch(query, signal) {
+  if (TAVILY_API_KEY) {
+    try {
+      return await searchTavily(query, signal);
+    } catch (err) {
+      if (signal.aborted) throw err;
+      console.log(`${err.message}. Searching Wikipedia instead.`);
+    }
+  }
+  return searchWikipedia(query, signal);
+}
+
+// The current date and time where the visitor is, so "today" and "now" mean something.
+function timeNow(timeZone) {
+  let zone = "UTC";
+  try {
+    if (timeZone) {
+      new Intl.DateTimeFormat("en-GB", { timeZone });
+      zone = timeZone;
+    }
+  } catch {}
+  const now = new Date().toLocaleString("en-GB", {
+    timeZone: zone,
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `The current date and time for the user is ${now} (${zone} time).`;
+}
+
+const SEARCH_RULES =
+  "You can search the internet with the web_search tool. Use it whenever a question is about something current or checkable: news, sports results and scores, who won or is winning something, prices, weather, recent events, or anything that may have changed since your training. Also use it when the user asks you to look something up. Answer from the search results, cite them inline like [1] or [2] using the result numbers, and say plainly if the results don't answer the question. Never invent scores, dates, names or facts. The page automatically shows the user pictures and links from your searches, so don't paste image or link URLs yourself.";
 
 // Splits a streamed response body into non-empty lines.
 async function* lines(body) {
@@ -219,9 +353,9 @@ function allowed(req) {
 //   done  -> {content}   the full reply text to keep in the history
 //   error -> {message}
 async function handleChat(req, res) {
-  let messages;
+  let messages, timeZone;
   try {
-    ({ messages } = JSON.parse(await readBody(req)));
+    ({ messages, timeZone } = JSON.parse(await readBody(req)));
     if (!Array.isArray(messages) || messages.length === 0) throw new Error("messages must be a non-empty array");
   } catch (err) {
     res.writeHead(400, { "Content-Type": "application/json" });
@@ -258,15 +392,60 @@ async function handleChat(req, res) {
       role: m.role === "assistant" ? "assistant" : "user",
       content: String(m.content ?? "").slice(0, 8000),
     }));
-    const stream = (ONLINE ? streamGroq : streamOllama)(
-      [{ role: "system", content: SYSTEM_PROMPT }, ...convo],
-      abort.signal,
-    );
+    const system = [SYSTEM_PROMPT, timeNow(timeZone), ONLINE ? SEARCH_RULES : ""].filter(Boolean).join("\n\n");
+    const history = [{ role: "system", content: system }, ...convo];
     let full = "";
-    for await (const text of stream) {
-      if (!full && !ONLINE) console.log(`First words arrived after ${((Date.now() - started) / 1000).toFixed(1)}s.`);
-      full += text;
-      send("text", { text });
+    let searches = 0;
+    let sourceNumber = 0;
+    // Online, the model may ask to search the web; run the searches, show what was found,
+    // then let it answer from the results.
+    for (let round = 0; round < 4; round++) {
+      const canSearch = ONLINE && searches < MAX_SEARCHES;
+      const stream = ONLINE ? streamGroq(history, abort.signal, canSearch ? [WEB_SEARCH_TOOL] : null) : streamOllama(history, abort.signal);
+      let toolCalls = null;
+      let roundText = "";
+      for await (const part of stream) {
+        if (typeof part !== "string") {
+          toolCalls = part.toolCalls;
+          continue;
+        }
+        if (!full && !ONLINE) console.log(`First words arrived after ${((Date.now() - started) / 1000).toFixed(1)}s.`);
+        full += part;
+        roundText += part;
+        send("text", { text: part });
+      }
+      if (!toolCalls) break;
+
+      history.push({ role: "assistant", content: roundText || null, tool_calls: toolCalls });
+      for (const call of toolCalls) {
+        let query = "";
+        try {
+          query = String(JSON.parse(call.function.arguments || "{}").query || "").slice(0, 200);
+        } catch {}
+        let content;
+        if (call.function.name !== "web_search" || !query) {
+          content = "Error: unknown tool or missing query.";
+        } else if (searches >= MAX_SEARCHES) {
+          content = "Search limit reached for this message. Answer with what you have.";
+        } else {
+          searches++;
+          send("status", { text: `Searching the web for “${query}”…` });
+          try {
+            const found = await webSearch(query, abort.signal);
+            const results = found.results.map((r) => ({ ...r, n: ++sourceNumber }));
+            send("sources", { query, provider: found.provider, results, images: found.images });
+            content = results.length
+              ? results.map((r) => `[${r.n}] ${r.title}${r.date ? ` (${r.date})` : ""}\n${r.url}\n${r.snippet}`).join("\n\n")
+              : "No results found.";
+          } catch (err) {
+            if (abort.signal.aborted) throw err;
+            console.log(`Search error: ${err.message}`);
+            content = "The search didn't work this time. Answer from what you know and say you couldn't check online.";
+          }
+        }
+        history.push({ role: "tool", tool_call_id: call.id, content });
+      }
+      send("status", { text: "Reading the results…" });
     }
     send("done", { content: full });
     if (!ONLINE) console.log(`Reply finished in ${((Date.now() - started) / 1000).toFixed(1)}s.`);

@@ -55,6 +55,7 @@
       .replace(/\*\*|__|\*|#+\s/g, "")
       .replace(/^\s*[-•]\s+/gm, "")
       .replace(/\[(.*?)\]\(.*?\)/g, "$1")
+      .replace(/\[\d{1,2}\]|【[^】]*】/g, "")
       .replace(/\s+/g, " ")
       .trim();
   }
@@ -237,6 +238,9 @@
         replyEl.textContent = speakable(shown);
         replyEl.scrollTop = replyEl.scrollHeight;
         voiceOut.add(chunk);
+      },
+      onStatus(message) {
+        if (id === session && state === "thinking") statusEl.textContent = message;
       },
       onError(message) {
         error = message;

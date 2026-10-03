@@ -54,6 +54,18 @@ Save the file, close the black window, and start the app again to see your chang
 
 The logo is `public/icon.svg` (the page) and `public/favicon.ico` (the desktop shortcut).
 
+### Live web search, pictures and today's date
+
+On the website, Farhan AI knows the current date and time where each visitor is, and it searches the internet when a question needs up-to-date facts (news, scores, who won something, prices). It shows pictures and numbered source links above its answer, and the little numbers in the answer link to those sources.
+
+Without any extra setup it searches **Wikipedia**, which is free and needs no key. For full, up-to-the-minute web search with news and photos, get a free **Tavily** key (1,000 searches a month, no card needed):
+
+1. Go to https://app.tavily.com and sign up with Google or email.
+2. Copy your API key (it starts with `tvly-`).
+3. In Render, open your farhanai service, then **Environment**, click **Add Environment Variable**, set the key to `TAVILY_API_KEY` and paste your key as the value, then **Save Changes**. Render restarts the site with web search switched on.
+
+Web search only works on the website (with Groq), not in the PC version with Ollama.
+
 ### Voice mode
 
 Tap **Voice** at the top of the page, or swipe sideways, to switch from Chat to Voice. Tap the glowing orb and talk: Farhan AI listens, answers out loud, then listens again until you tap the orb to stop. Voice chats also show up in Chat. It uses the speech features built into the browser, so it's free; it works in Chrome, Edge and Safari (not Firefox), and the browser asks for permission to use the mic the first time.

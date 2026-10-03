@@ -174,3 +174,106 @@ test("online mode switches to an available model when the chosen one is gone", a
   await chat(base);
   assert.deepEqual(tried, ["llama-3.3-70b-versatile", "openai/gpt-oss-20b", "openai/gpt-oss-20b"]);
 });
+
+// A fake Groq that asks to search on the first request and answers on the second.
+function startSearchingGroq(requests) {
+  const groq = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    body = JSON.parse(body);
+    requests.push(body);
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    if (requests.length === 1) {
+      const call = { index: 0, id: "call_1", type: "function", function: { name: "web_search", arguments: "" } };
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [call] } }] })}\n\n`);
+      const more = { index: 0, function: { arguments: '{"query":"world cup winner"}' } };
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [more] } }] })}\n\n`);
+    } else {
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "Argentina won [1]." } }] })}\n\n`);
+    }
+    res.end("data: [DONE]\n\n");
+  });
+  return new Promise((resolve) => groq.listen(0, () => resolve(groq)));
+}
+
+test("online mode searches the web and shows sources and pictures", async (t) => {
+  const requests = [];
+  const groq = await startSearchingGroq(requests);
+  t.after(() => groq.close());
+  let wikiQuery;
+  const wiki = http.createServer((req, res) => {
+    wikiQuery = new URL(req.url, "http://x").searchParams.get("gsrsearch");
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        query: {
+          pages: {
+            7: { index: 1, title: "2022 FIFA World Cup final", fullurl: "https://en.wikipedia.org/wiki/2022_FIFA_World_Cup_final", extract: "Argentina beat France on penalties.", thumbnail: { source: "https://upload.wikimedia.org/final.jpg" } },
+          },
+        },
+      }),
+    );
+  });
+  await new Promise((resolve) => wiki.listen(0, resolve));
+  t.after(() => wiki.close());
+  const base = await startApp(t, {
+    GROQ_API_KEY: "k",
+    GROQ_URL: `http://127.0.0.1:${groq.address().port}`,
+    WIKI_URL: `http://127.0.0.1:${wiki.address().port}/w/api.php`,
+    TAVILY_API_KEY: "",
+  });
+
+  const text = await fetch(`${base}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages: [{ role: "user", content: "Who won the World Cup?" }], timeZone: "Europe/London" }),
+  }).then((r) => r.text());
+
+  assert.equal(wikiQuery, "world cup winner");
+  const sources = JSON.parse(/event: sources\ndata: (.*)/.exec(text)[1]);
+  assert.equal(sources.provider, "wikipedia");
+  assert.equal(sources.results[0].n, 1);
+  assert.equal(sources.images[0].url, "https://upload.wikimedia.org/final.jpg");
+  assert.match(text, /event: status\ndata: .*Searching the web/);
+  assert.equal(JSON.parse(/event: done\ndata: (.*)/.exec(text)[1]).content, "Argentina won [1].");
+
+  // First request offers the search tool and tells the model today's date in the visitor's time zone.
+  assert.equal(requests[0].tools[0].function.name, "web_search");
+  assert.match(requests[0].messages[0].content, /current date and time .* \(Europe\/London time\)/);
+  // Second request carries the search results back to the model.
+  const tool = requests[1].messages.find((m) => m.role === "tool");
+  assert.equal(tool.tool_call_id, "call_1");
+  assert.match(tool.content, /\[1\] 2022 FIFA World Cup final/);
+});
+
+test("uses Tavily for live web search when a key is set", async (t) => {
+  const requests = [];
+  const groq = await startSearchingGroq(requests);
+  t.after(() => groq.close());
+  let tavilyAuth;
+  const tavily = http.createServer(async (req, res) => {
+    for await (const _ of req);
+    tavilyAuth = req.headers.authorization;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        results: [{ title: "Final score", url: "https://example.com/score", content: "Argentina 3-3 France (4-2 pens)", published_date: "2022-12-18" }],
+        images: [{ url: "https://example.com/trophy.jpg", description: "Messi lifts the trophy" }, "http://insecure.example/x.jpg"],
+      }),
+    );
+  });
+  await new Promise((resolve) => tavily.listen(0, resolve));
+  t.after(() => tavily.close());
+  const base = await startApp(t, {
+    GROQ_API_KEY: "k",
+    GROQ_URL: `http://127.0.0.1:${groq.address().port}`,
+    TAVILY_API_KEY: "tvly-test",
+    TAVILY_URL: `http://127.0.0.1:${tavily.address().port}/search`,
+  });
+  const text = await chat(base);
+  assert.equal(tavilyAuth, "Bearer tvly-test");
+  const sources = JSON.parse(/event: sources\ndata: (.*)/.exec(text)[1]);
+  assert.equal(sources.provider, "web");
+  assert.deepEqual(sources.images, [{ url: "https://example.com/trophy.jpg", caption: "Messi lifts the trophy" }]);
+  assert.match(requests[1].messages.find((m) => m.role === "tool").content, /Argentina 3-3 France/);
+});

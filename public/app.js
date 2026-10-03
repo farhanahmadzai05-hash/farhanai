@@ -107,12 +107,101 @@ function setBusy(value) {
   sendBtn.disabled = value;
 }
 
-// hooks (used by voice mode): onText(chunk) for each piece of the reply, onError(message).
+// Pictures and links from the AI's web searches, shown above its answer.
+function safeUrl(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function showSources(container, data) {
+  container.hidden = false;
+  const images = (data.images || []).filter((img) => safeUrl(img.url) && img.url.startsWith("https:"));
+  let shots = container.querySelector(".shots");
+  if (images.length && !shots) {
+    shots = document.createElement("div");
+    shots.className = "shots";
+    container.prepend(shots);
+  }
+  for (const img of images) {
+    if (shots.children.length >= 4) break;
+    const link = document.createElement("a");
+    link.href = img.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    const pic = document.createElement("img");
+    pic.src = img.url;
+    pic.alt = img.caption || data.query;
+    pic.loading = "lazy";
+    pic.referrerPolicy = "no-referrer";
+    pic.onerror = () => link.remove(); // some sites don't allow their pictures to be shown elsewhere
+    link.appendChild(pic);
+    shots.appendChild(link);
+  }
+  let list = container.querySelector(".source-list");
+  if (!list) {
+    const label = document.createElement("div");
+    label.className = "sources-label";
+    label.textContent = data.provider === "wikipedia" ? "Searched Wikipedia" : "Searched the web";
+    list = document.createElement("div");
+    list.className = "source-list";
+    container.append(label, list);
+  }
+  for (const r of data.results || []) {
+    const url = safeUrl(r.url);
+    if (!url) continue;
+    const card = document.createElement("a");
+    card.className = "source";
+    card.href = url;
+    card.target = "_blank";
+    card.rel = "noopener noreferrer";
+    const thumb = safeUrl(r.image || r.icon);
+    if (thumb && thumb.startsWith("https:")) {
+      const pic = document.createElement("img");
+      pic.src = thumb;
+      pic.alt = "";
+      pic.loading = "lazy";
+      pic.referrerPolicy = "no-referrer";
+      pic.onerror = () => pic.remove();
+      card.appendChild(pic);
+    }
+    const n = document.createElement("span");
+    n.className = "n";
+    n.textContent = r.n;
+    const title = document.createElement("span");
+    title.className = "t";
+    title.textContent = r.title;
+    const site = document.createElement("span");
+    site.className = "site";
+    site.textContent = new URL(url).hostname.replace(/^www\./, "");
+    card.append(n, title, site);
+    list.appendChild(card);
+  }
+}
+
+// Turns the AI's [1] style citations into links to those sources.
+function linkCitations(html, links) {
+  return html.replace(/【[^】]*】/g, "").replace(/\[(\d{1,2})\]/g, (m, n) =>
+    links[n] ? `<a class="cite" href="${escapeHtml(links[n])}" target="_blank" rel="noopener noreferrer">${n}</a>` : m,
+  );
+}
+
+// hooks (used by voice mode): onText(chunk) for each piece of the reply, onStatus(message), onError(message).
 // Returns the full reply, or null if something went wrong.
 async function send(text, hooks = {}) {
   history.push({ role: "user", content: text });
   addMessage("user", text);
   const replyEl = addMessage("assistant");
+  const sourcesEl = document.createElement("div");
+  sourcesEl.className = "sources";
+  sourcesEl.hidden = true;
+  const answerEl = document.createElement("div");
+  replyEl.append(sourcesEl, answerEl);
+  const links = {};
+  let statusText = "";
   setBusy(true);
 
   // While waiting for the first words, show how long it's been.
@@ -120,9 +209,10 @@ async function send(text, hooks = {}) {
   const showWaiting = () => {
     const secs = Math.round((Date.now() - started) / 1000);
     let note = "";
-    if (secs >= 5) note = `Thinking… ${secs}s`;
-    if (secs >= 15) note += " · the first reply can take a minute or two while the model loads";
-    replyEl.innerHTML = `<div class="typing"><span></span><span></span><span></span></div>${note ? `<div class="wait-note">${note}</div>` : ""}`;
+    if (statusText) note = statusText;
+    else if (secs >= 5) note = `Thinking… ${secs}s`;
+    if (secs >= 15 && !statusText && !onlineSite) note += " · the first reply can take a minute or two while the model loads";
+    answerEl.innerHTML = `<div class="typing"><span></span><span></span><span></span></div>${note ? `<div class="wait-note">${note}</div>` : ""}`;
   };
   showWaiting();
   const waitingTimer = setInterval(showWaiting, 1000);
@@ -139,7 +229,7 @@ async function send(text, hooks = {}) {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: history }),
+      body: JSON.stringify({ messages: history, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
       signal: controller.signal,
     });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `Server error ${res.status}`);
@@ -161,11 +251,19 @@ async function send(text, hooks = {}) {
           stopWaiting();
           replyText += data.text;
           hooks.onText?.(data.text);
-          replyEl.innerHTML = renderMarkdown(replyText);
+          answerEl.innerHTML = linkCitations(renderMarkdown(replyText), links);
+          messagesEl.scrollTop = messagesEl.scrollHeight;
+        } else if (event === "status") {
+          statusText = data.text;
+          hooks.onStatus?.(data.text);
+          if (!replyText) showWaiting();
+        } else if (event === "sources") {
+          for (const r of data.results || []) if (safeUrl(r.url)) links[r.n] = safeUrl(r.url);
+          showSources(sourcesEl, data);
           messagesEl.scrollTop = messagesEl.scrollHeight;
         } else if (event === "done") {
           history.push({ role: "assistant", content: data.content });
-          if (!replyText) replyEl.textContent = "(The model sent back an empty reply. Try asking again.)";
+          if (!replyText) answerEl.textContent = "(The model sent back an empty reply. Try asking again.)";
           finished = true;
         } else if (event === "error") {
           throw new Error(data.message);
