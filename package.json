@@ -1,0 +1,13 @@
+{
+  "name": "chatbot",
+  "version": "2.0.0",
+  "description": "A small web chat app powered by a free AI model running locally with Ollama",
+  "type": "module",
+  "main": "server.js",
+  "private": true,
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  }
+}

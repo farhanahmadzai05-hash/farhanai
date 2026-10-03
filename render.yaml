@@ -1,0 +1,12 @@
+# Lets Render set up the Farhan AI website automatically (Blueprint).
+services:
+  - type: web
+    name: farhanai
+    runtime: node
+    plan: free
+    buildCommand: echo "No build step needed"
+    startCommand: node server.js
+    healthCheckPath: /api/config
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
