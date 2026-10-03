@@ -11,6 +11,7 @@
   function show() {
     leaving = false;
     splash.classList.remove("leaving");
+    document.body.classList.remove("entering");
     title.style.transformOrigin = "";
     splash.hidden = false;
     window.addEventListener("keydown", enter, true);
@@ -25,13 +26,15 @@
     // Zoom into the F's upright stroke.
     const f = splash.querySelector(".splash-f").getBoundingClientRect();
     const t = title.getBoundingClientRect();
-    title.style.transformOrigin = `${f.left - t.left + f.width * 0.25}px ${f.top - t.top + f.height * 0.6}px`;
+    title.style.transformOrigin = `${f.left - t.left + f.width * 0.1}px ${f.top - t.top + f.height * 0.65}px`;
     splash.classList.add("leaving");
+    document.body.classList.add("entering");
   }
 
   splash.addEventListener("animationend", (ev) => {
     if (ev.target !== splash || !leaving) return;
     splash.hidden = true;
+    document.body.classList.remove("entering");
     document.getElementById("input")?.focus();
   });
   splash.addEventListener("pointerdown", enter);
