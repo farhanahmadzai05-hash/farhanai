@@ -47,7 +47,6 @@ const STATIC_FILES = {
   "/favicon.ico": ["favicon.ico", "image/x-icon"],
   "/music.js": ["music.js", "text/javascript; charset=utf-8"],
   "/splash.js": ["splash.js", "text/javascript; charset=utf-8"],
-  "/fonts/orbitron-900.woff2": ["fonts/orbitron-900.woff2", "font/woff2"],
   // Optional: drop your own song into the public folder with one of these names.
   "/music.mp3": ["music.mp3", "audio/mpeg"],
   "/music.m4a": ["music.m4a", "audio/mp4"],
