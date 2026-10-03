@@ -25,7 +25,8 @@
     `<g class="${cls}">${letters
       .map((d, i) => `<path d="${d}"${drawn ? ` pathLength="1" style="animation-delay:${0.1 + i * 0.09}s"` : ""}/>`)
       .join("")}</g>`;
-  svg.setAttribute("viewBox", "-8 -14 878 108");
+  const VIEW = [-8, -14, 878, 108];
+  svg.setAttribute("viewBox", VIEW.join(" "));
   svg.innerHTML =
     `<defs><linearGradient id="splash-metal" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="80">` +
     `<stop offset="0" stop-color="#ffffff"/><stop offset="0.55" stop-color="#e3e8ff"/><stop offset="1" stop-color="#aeb9e6"/>` +
@@ -41,6 +42,8 @@
     leaving = false;
     splash.getAnimations({ subtree: true }).forEach((a) => a.id === "leave" && a.cancel());
     splash.classList.remove("leaving");
+    splash.querySelector(".dive")?.remove();
+    svg.querySelector(".line").style.visibility = "";
     document.body.classList.remove("entering");
     splash.hidden = false;
     window.addEventListener("keydown", enter, true);
@@ -70,23 +73,49 @@
       return finish();
     }
 
-    // Aim at the inside of the first triangle and work out how far to zoom so it covers the screen.
-    const ctm = svg.getScreenCTM();
+    // The dive redraws the title at screen size every frame by shrinking the SVG's viewBox
+    // around the first triangle. Scaling the element itself would make the browser paint a
+    // picture hundreds of times bigger than the screen, which is what made phones stutter.
     const box = svg.getBoundingClientRect();
-    const point = new DOMPoint(DIVE_X, DIVE_Y).matrixTransform(ctm);
-    const unitsToPx = ctm.a;
-    const halfDiagonal = Math.hypot(innerWidth, innerHeight) / 2;
-    const zoom = (halfDiagonal / (INNER_RADIUS * unitsToPx)) * 1.15;
-    svg.style.transformOrigin = `${point.x - box.left}px ${point.y - box.top}px`;
+    const k = VIEW[2] / box.width; // SVG units per screen pixel
+    const W = innerWidth * k;
+    const H = innerHeight * k;
+    const x0 = VIEW[0] - box.left * k;
+    const y0 = VIEW[1] - box.top * k;
+    const zoom = (Math.hypot(W, H) / 2 / INNER_RADIUS) * 1.1;
 
-    // Scale grows exponentially so the dive feels like constant speed, not a sudden jump.
-    const steps = 24;
-    const frames = Array.from({ length: steps + 1 }, (_, i) => ({ transform: `scale(${Math.pow(zoom, i / steps)})` }));
+    const dive = svg.cloneNode(true);
+    dive.removeAttribute("id");
+    dive.classList.add("dive");
+    // Leave the soft glow behind: huge see-through strokes are what's slow to draw.
+    dive.querySelectorAll(".glow").forEach((g) => g.remove());
+    dive.setAttribute("preserveAspectRatio", "none");
+    const frameAt = (z) => {
+      const w = W / z;
+      const h = H / z;
+      dive.setAttribute("viewBox", `${DIVE_X - (DIVE_X - x0) / z} ${DIVE_Y - (DIVE_Y - y0) / z} ${w} ${h}`);
+    };
+    frameAt(1);
+    splash.appendChild(dive);
+    svg.querySelector(".line").style.visibility = "hidden";
 
-    const fades = [".splash-grid", ".splash-tagline", ".splash-hint"].map((s) =>
+    const fades = ["#splash-title", ".splash-grid", ".splash-tagline", ".splash-hint"].map((s) =>
       play(splash.querySelector(s), [{ opacity: 1 }, { opacity: 0 }], { duration: 600, easing: "ease-out" }),
     );
-    await Promise.all([...fades, play(svg, frames, { duration: 1500, easing: "cubic-bezier(0.55, 0, 0.75, 1)" })]);
+    const DURATION = 1400;
+    await new Promise((done) => {
+      const start = performance.now();
+      const step = (now) => {
+        if (!leaving) return done();
+        const t = Math.min(1, (now - start) / DURATION);
+        const eased = t * t * (3 - 2 * t); // smooth start and finish
+        frameAt(Math.pow(zoom, eased)); // exponential, so it feels like a steady dive
+        if (t < 1) requestAnimationFrame(step);
+        else done();
+      };
+      requestAnimationFrame(step);
+    });
+    await Promise.all(fades);
     await new Promise((r) => setTimeout(r, 250)); // a beat of pure black
     finish();
   }

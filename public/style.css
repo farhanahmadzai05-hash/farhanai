@@ -342,6 +342,10 @@ body.offline .online .dot { background: var(--error); box-shadow: 0 0 8px var(--
 @keyframes splash-rise-in { from { opacity: 0; transform: translateY(8px); } }
 @keyframes splash-pulse { 50% { opacity: 0.3; } }
 .splash.leaving { pointer-events: none; }
+/* Full-screen copy of the title used for the dive into the first triangle */
+.splash-title.dive { position: absolute; inset: 0; width: 100%; height: 100%; }
+.splash-title.dive .line path { animation: none; stroke-dashoffset: 0; }
+.splash-title.dive .glow { animation: none; opacity: var(--glow); }
 
 /* The chat assembles itself after the intro */
 body.entering header { animation: app-drop-in 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
