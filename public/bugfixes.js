@@ -2,18 +2,14 @@
 // To add one, copy an entry. Pictures go in public/bugfixes; leave out "before"/"after" for none.
 const BUG_FIXES = [
   {
-    title: "Live data didn't work",
-    date: "July 2026",
-    text: "Farhan AI couldn't look anything up, so questions about recent events got an apology. Now it searches the internet, reads what it finds, and shows pictures and links to its sources.",
-    before: { src: "/bugfixes/live-before.webp", caption: "Before: it couldn't check who won (recreated)" },
-    after: { src: "/bugfixes/live-after.webp", caption: "After: it finds the 2026 World Cup final result" },
+    title: "Voice mode couldn't hear you",
+    date: "October 2026",
+    text: "In some browsers the mic never switched on and nothing happened. Now it asks for the mic properly, notices when listening doesn't start, and tells you how to fix it.",
   },
   {
-    title: "Maths came out as gibberish",
-    date: "August 2026",
-    text: "Answers with maths showed raw code like \\frac{...}{h} and the steps were all numbered 1. Now equations are drawn properly and answers are laid out like ChatGPT, with headings, numbered steps and tables.",
-    before: { src: "/bugfixes/maths-before.webp", caption: "Before: raw LaTeX code" },
-    after: { src: "/bugfixes/maths-after.webp", caption: "After: proper equations and numbered steps" },
+    title: "The intro was laggy",
+    date: "October 2026",
+    text: "The zoom into the A stuttered on some computers. It's now drawn in a much lighter way, so it runs smoothly.",
   },
   {
     title: "“The model sent back an empty reply”",
@@ -26,14 +22,18 @@ const BUG_FIXES = [
     text: "The free AI service only allows so much use per minute, and when it ran out you got a red error. Now Farhan AI waits a moment if the wait is short, or quietly switches to another free AI model so you still get an answer.",
   },
   {
-    title: "Voice mode couldn't hear you",
-    date: "October 2026",
-    text: "In some browsers the mic never switched on and nothing happened. Now it asks for the mic properly, notices when listening doesn't start, and tells you how to fix it.",
+    title: "Maths came out as gibberish",
+    date: "August 2026",
+    text: "Answers with maths showed raw code like \\frac{...}{h} and the steps were all numbered 1. Now equations are drawn properly and answers are laid out like ChatGPT, with headings, numbered steps and tables.",
+    before: { src: "/bugfixes/maths-before.webp", caption: "Before: raw LaTeX code" },
+    after: { src: "/bugfixes/maths-after.webp", caption: "After: proper equations and numbered steps" },
   },
   {
-    title: "The intro was laggy",
-    date: "October 2026",
-    text: "The zoom into the A stuttered on some computers. It's now drawn in a much lighter way, so it runs smoothly.",
+    title: "Live data didn't work",
+    date: "July 2026",
+    text: "Farhan AI couldn't look anything up, so questions about recent events got an apology. Now it searches the internet, reads what it finds, and shows pictures and links to its sources.",
+    before: { src: "/bugfixes/live-before.webp", caption: "Before: it couldn't check who won (recreated)" },
+    after: { src: "/bugfixes/live-after.webp", caption: "After: it finds the 2026 World Cup final result" },
   },
 ];
 
