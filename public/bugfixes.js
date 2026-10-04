@@ -3,14 +3,14 @@
 const BUG_FIXES = [
   {
     title: "Live data didn't work",
-    date: "October 2026",
+    date: "July 2026",
     text: "Farhan AI couldn't look anything up, so questions about recent events got an apology. Now it searches the internet, reads what it finds, and shows pictures and links to its sources.",
     before: { src: "/bugfixes/live-before.webp", caption: "Before: it couldn't check who won (recreated)" },
     after: { src: "/bugfixes/live-after.webp", caption: "After: it finds the 2026 World Cup final result" },
   },
   {
     title: "Maths came out as gibberish",
-    date: "October 2026",
+    date: "August 2026",
     text: "Answers with maths showed raw code like \\frac{...}{h} and the steps were all numbered 1. Now equations are drawn properly and answers are laid out like ChatGPT, with headings, numbered steps and tables.",
     before: { src: "/bugfixes/maths-before.webp", caption: "Before: raw LaTeX code" },
     after: { src: "/bugfixes/maths-after.webp", caption: "After: proper equations and numbered steps" },
