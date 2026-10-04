@@ -277,3 +277,76 @@ test("uses Tavily for live web search when a key is set", async (t) => {
   assert.deepEqual(sources.images, [{ url: "https://example.com/trophy.jpg", caption: "Messi lifts the trophy" }]);
   assert.match(requests[1].messages.find((m) => m.role === "tool").content, /Argentina 3-3 France/);
 });
+
+test("when Groq says it's busy, a short wait is retried and a long one switches model", async (t) => {
+  const tried = [];
+  let calls = 0;
+  const groq = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const { model } = JSON.parse(body);
+    tried.push(model);
+    calls++;
+    if (calls === 1) {
+      res.writeHead(429, { "Content-Type": "application/json", "retry-after": "0.2" });
+      return res.end(JSON.stringify({ error: { message: "Rate limit reached" } }));
+    }
+    if (model === "openai/gpt-oss-120b") {
+      res.writeHead(429, { "Content-Type": "application/json", "retry-after": "40" });
+      return res.end(JSON.stringify({ error: { message: "Rate limit reached for tokens per minute" } }));
+    }
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.end(`data: ${JSON.stringify({ choices: [{ delta: { content: `Hi from ${model}` } }] })}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise((resolve) => groq.listen(0, resolve));
+  t.after(() => groq.close());
+  const base = await startApp(t, { GROQ_API_KEY: "k", GROQ_MODEL: "openai/gpt-oss-120b", GROQ_URL: `http://127.0.0.1:${groq.address().port}` });
+
+  const text = await chat(base);
+  assert.match(text, /event: status/);
+  assert.doesNotMatch(text, /event: error/);
+  assert.equal(JSON.parse(/event: done\ndata: (.*)/.exec(text)[1]).content, "Hi from openai/gpt-oss-20b");
+  // The busy model is skipped until its limit resets.
+  await chat(base);
+  assert.deepEqual(tried, ["openai/gpt-oss-120b", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "openai/gpt-oss-20b"]);
+});
+
+test("if the model writes nothing after searching, it is asked again with the results", async (t) => {
+  const requests = [];
+  const groq = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    requests.push(JSON.parse(body));
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    if (requests.length === 1) {
+      const call = { index: 0, id: "call_1", type: "function", function: { name: "web_search", arguments: '{"query":"world cup final"}' } };
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [call] } }] })}\n\n`);
+    } else if (requests.length === 2) {
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "" } }] })}\n\n`); // empty answer
+    } else {
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "Spain won 1-0 [1]." } }] })}\n\n`);
+    }
+    res.end("data: [DONE]\n\n");
+  });
+  await new Promise((resolve) => groq.listen(0, resolve));
+  t.after(() => groq.close());
+  const wiki = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ query: { pages: { 1: { index: 1, title: "2026 FIFA World Cup final", fullurl: "https://en.wikipedia.org/wiki/2026_FIFA_World_Cup_final", extract: "Spain beat Argentina 1-0." } } } }));
+  });
+  await new Promise((resolve) => wiki.listen(0, resolve));
+  t.after(() => wiki.close());
+  const base = await startApp(t, {
+    GROQ_API_KEY: "k",
+    GROQ_URL: `http://127.0.0.1:${groq.address().port}`,
+    WIKI_URL: `http://127.0.0.1:${wiki.address().port}/w/api.php`,
+    TAVILY_API_KEY: "",
+  });
+
+  const text = await chat(base);
+  assert.equal(JSON.parse(/event: done\ndata: (.*)/.exec(text)[1]).content, "Spain won 1-0 [1].");
+  assert.equal(requests.length, 3);
+  const retry = requests[2];
+  assert.equal(retry.tools, undefined);
+  assert.match(retry.messages.at(-1).content, /Spain beat Argentina 1-0/);
+});

@@ -49,6 +49,7 @@ const STATIC_FILES = {
   "/splash.js": ["splash.js", "text/javascript; charset=utf-8"],
   "/panels.js": ["panels.js", "text/javascript; charset=utf-8"],
   "/voice.js": ["voice.js", "text/javascript; charset=utf-8"],
+  "/bugfixes.js": ["bugfixes.js", "text/javascript; charset=utf-8"],
   // Optional: drop your own song into the public folder with one of these names.
   "/music.mp3": ["music.mp3", "audio/mpeg"],
   "/music.m4a": ["music.m4a", "audio/mp4"],
@@ -135,12 +136,12 @@ async function pickAvailableGroqModel() {
   return GROQ_PREFERRED.find((id) => chat.includes(id)) || chat[0];
 }
 
-async function callGroq(messages, signal, extra = {}) {
+async function callGroq(messages, signal, extra = {}, model = groqModel) {
   try {
     return await fetch(`${GROQ_URL}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_API_KEY}` },
-      body: JSON.stringify({ model: groqModel, stream: true, messages, ...extra }),
+      body: JSON.stringify({ model, stream: true, messages, ...extra }),
       signal,
     });
   } catch (err) {
@@ -150,37 +151,94 @@ async function callGroq(messages, signal, extra = {}) {
   }
 }
 
+// Groq's free plan limits how much each model can do per minute (and per day). When a model
+// is busy, wait a moment if the wait is short; otherwise answer with the next free model, which
+// has its own separate allowance. Busy models are skipped until their limit resets.
+const busyUntil = new Map();
+const SHORT_WAIT = Number(process.env.GROQ_SHORT_WAIT ?? 6); // seconds worth waiting for
+const sleep = (ms, signal) =>
+  new Promise((done, fail) => {
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", () => (clearTimeout(timer), fail(signal.reason)), { once: true });
+  });
+
+// Seconds until Groq lets us try again, from its headers ("2", "7.5s", "1m30s", "250ms").
+function retryAfter(headers) {
+  const seconds = (v) => {
+    if (!v) return NaN;
+    if (/^\d+(\.\d+)?$/.test(v)) return Number(v);
+    let total = 0;
+    for (const [, n, unit] of v.matchAll(/(\d+(?:\.\d+)?)(ms|h|m|s)/g)) total += Number(n) * { ms: 0.001, s: 1, m: 60, h: 3600 }[unit];
+    return total || NaN;
+  };
+  const found = ["retry-after", "x-ratelimit-reset-tokens", "x-ratelimit-reset-requests"].map((h) => seconds(headers.get(h))).filter((n) => n >= 0);
+  return found.length ? found[0] : 60;
+}
+
 // Yields the reply from Groq's OpenAI-compatible API piece by piece: strings for text, and
 // at the end {toolCalls} if the model asked to use a tool (such as web search) instead.
 let toolsWork = true; // switched off if the model on this account can't use tools
 async function* streamGroq(messages, signal, tools) {
   const extra = () => (tools && toolsWork ? { tools, tool_choice: "auto" } : {});
-  let upstream = await callGroq(messages, signal, extra());
+  const ready = (m) => !(busyUntil.get(m) > Date.now());
+  // The main model first, then the backups, skipping any that are busy right now.
+  const queue = [groqModel, ...GROQ_PREFERRED.filter((m) => m !== groqModel)];
+  let candidates = queue.filter(ready);
+  if (!candidates.length) candidates = [groqModel];
+  let upstream;
   let detail = "";
-  if (upstream.status === 404 || upstream.status === 400) {
-    detail = (await upstream.json().catch(() => ({}))).error?.message || "";
-    // The model was retired or isn't on this account's plan: switch to one that is.
-    if (/model/i.test(detail) && /(not exist|not have access|decommissioned|deprecated|not found)/i.test(detail)) {
-      const replacement = await pickAvailableGroqModel().catch(() => null);
-      if (replacement && replacement !== groqModel) {
-        console.log(`Groq model "${groqModel}" isn't available (${detail}). Switching to "${replacement}".`);
-        groqModel = replacement;
-        upstream = await callGroq(messages, signal, extra());
+  let waited = false;
+  for (let i = 0; i < candidates.length; i++) {
+    const model = candidates[i];
+    upstream = await callGroq(messages, signal, extra(), model);
+    detail = "";
+    if (upstream.status === 404 || upstream.status === 400) {
+      const error = (await upstream.json().catch(() => ({}))).error || {};
+      detail = [error.message, error.code].filter(Boolean).join(" ");
+      // The model was retired or isn't on this account's plan.
+      if (/model/i.test(detail) && /(not exist|not have access|decommissioned|deprecated|not found)/i.test(detail)) {
+        busyUntil.set(model, Date.now() + 60 * 60 * 1000);
+        if (model === groqModel) {
+          const replacement = await pickAvailableGroqModel().catch(() => null);
+          if (replacement && replacement !== groqModel) {
+            console.log(`Groq model "${groqModel}" isn't available (${detail}). Switching to "${replacement}".`);
+            groqModel = replacement;
+            candidates = [...candidates.slice(0, i + 1), replacement, ...candidates.slice(i + 1).filter((m) => m !== replacement)];
+          }
+        }
+        continue;
+      }
+      if (tools && toolsWork && /tool|function/i.test(detail)) {
+        // The model fumbled the search request or can't search: answer without searching.
+        console.log(`Answering without web search this time (${detail}).`);
+        if (/not support/i.test(detail)) toolsWork = false;
+        upstream = await callGroq(messages, signal, {}, model);
         detail = "";
       }
-    } else if (tools && toolsWork && /tool/i.test(detail)) {
-      // The model fumbled the search request or can't search: answer without searching.
-      console.log(`Answering without web search this time (${detail}).`);
-      if (/not support/i.test(detail)) toolsWork = false;
-      upstream = await callGroq(messages, signal);
-      detail = "";
     }
+    if (upstream.status === 429) {
+      const wait = retryAfter(upstream.headers);
+      detail = (await upstream.json().catch(() => ({}))).error?.message || "rate limited";
+      if (!waited && wait <= SHORT_WAIT) {
+        // Worth a short pause: try the same model again.
+        waited = true;
+        console.log(`Groq model "${model}" is busy; waiting ${wait.toFixed(1)}s.`);
+        yield { status: "Lots of people are chatting, one moment…" };
+        await sleep(Math.max(250, wait * 1000), signal);
+        i--;
+        continue;
+      }
+      busyUntil.set(model, Date.now() + Math.min(wait, 24 * 3600) * 1000);
+      console.log(`Groq model "${model}" is busy for ${Math.round(wait)}s (${detail}). Trying another model.`);
+      continue;
+    }
+    break;
   }
   if (!upstream.ok) {
     detail ||= (await upstream.json().catch(() => ({}))).error?.message || `status ${upstream.status}`;
     console.log(`Groq error (${upstream.status}): ${detail}`);
     if (upstream.status === 401) throw new Error("The website's Groq API key is wrong or missing. Check GROQ_API_KEY in the host's settings.");
-    if (upstream.status === 429) throw new Error("Lots of people are chatting right now. Please wait a minute and try again.");
+    if (upstream.status === 429) throw new Error("Farhan AI is very busy right now. Please wait a minute and try again.");
     throw new Error(`The AI service had a problem: ${detail}`);
   }
   // Server-sent events: lines like "data: {...}", ending with "data: [DONE]".
@@ -189,7 +247,14 @@ async function* streamGroq(messages, signal, tools) {
     if (!line.startsWith("data:")) continue;
     const data = line.slice(5).trim();
     if (data === "[DONE]") break;
-    const delta = JSON.parse(data).choices?.[0]?.delta || {};
+    const parsed = JSON.parse(data);
+    if (parsed.error) {
+      // Groq gave up part way (for example, it garbled a search request). Stop here; the chat
+      // handler asks again for a plain answer if nothing was written.
+      console.log(`Groq stopped mid-reply: ${parsed.error.message || JSON.stringify(parsed.error)}`);
+      break;
+    }
+    const delta = parsed.choices?.[0]?.delta || {};
     if (delta.content) yield delta.content;
     for (const tc of delta.tool_calls || []) {
       const call = (calls[tc.index ?? calls.length] ||= { id: "", type: "function", function: { name: "", arguments: "" } });
@@ -391,16 +456,18 @@ async function handleChat(req, res) {
   }
 
   try {
-    // Keep only recent, reasonably sized messages so long chats stay fast and cheap.
-    const convo = messages.slice(-20).map((m) => ({
+    // Keep only recent, reasonably sized messages so long chats stay fast and stay inside the
+    // free plan's per-minute allowance.
+    const convo = messages.slice(-12).map((m) => ({
       role: m.role === "assistant" ? "assistant" : "user",
-      content: String(m.content ?? "").slice(0, 8000),
+      content: String(m.content ?? "").slice(0, 4000),
     }));
     const system = [SYSTEM_PROMPT, FORMAT_RULES, timeNow(timeZone), ONLINE ? SEARCH_RULES : ""].filter(Boolean).join("\n\n");
     const history = [{ role: "system", content: system }, ...convo];
     let full = "";
     let searches = 0;
     let sourceNumber = 0;
+    const found = []; // what the searches turned up, for the fallback below
     // Online, the model may ask to search the web; run the searches, show what was found,
     // then let it answer from the results.
     for (let round = 0; round < 4; round++) {
@@ -410,7 +477,8 @@ async function handleChat(req, res) {
       let roundText = "";
       for await (const part of stream) {
         if (typeof part !== "string") {
-          toolCalls = part.toolCalls;
+          if (part.status) send("status", { text: part.status });
+          if (part.toolCalls) toolCalls = part.toolCalls;
           continue;
         }
         if (!full && !ONLINE) console.log(`First words arrived after ${((Date.now() - started) / 1000).toFixed(1)}s.`);
@@ -435,12 +503,13 @@ async function handleChat(req, res) {
           searches++;
           send("status", { text: `Searching the web for “${query}”…` });
           try {
-            const found = await webSearch(query, abort.signal);
-            const results = found.results.map((r) => ({ ...r, n: ++sourceNumber }));
-            send("sources", { query, provider: found.provider, results, images: found.images });
+            const result = await webSearch(query, abort.signal);
+            const results = result.results.map((r) => ({ ...r, n: ++sourceNumber }));
+            send("sources", { query, provider: result.provider, results, images: result.images });
             content = results.length
               ? results.map((r) => `[${r.n}] ${r.title}${r.date ? ` (${r.date})` : ""}\n${r.url}\n${r.snippet}`).join("\n\n")
               : "No results found.";
+            found.push(`Search: ${query}\n\n${content}`);
           } catch (err) {
             if (abort.signal.aborted) throw err;
             console.log(`Search error: ${err.message}`);
@@ -450,6 +519,22 @@ async function handleChat(req, res) {
         history.push({ role: "tool", tool_call_id: call.id, content });
       }
       send("status", { text: "Reading the results…" });
+    }
+    // Sometimes the model reads the search results and then writes nothing (or keeps asking to
+    // search). Ask once more, without the search tool, with the results laid out plainly.
+    for (let attempt = 0; ONLINE && !full.trim() && attempt < 2; attempt++) {
+      const nudge = found.length
+        ? `Here is what the web search found:\n\n${found.join("\n\n---\n\n")}\n\nUsing these results, answer my last message now. Cite results like [1]. Don't search again.`
+        : "Please answer my last message now.";
+      const retry = [{ role: "system", content: system }, ...convo, { role: "user", content: nudge }];
+      for await (const part of streamGroq(retry, abort.signal, null)) {
+        if (typeof part !== "string") {
+          if (part.status) send("status", { text: part.status });
+          continue;
+        }
+        full += part;
+        send("text", { text: part });
+      }
     }
     send("done", { content: full });
     if (!ONLINE) console.log(`Reply finished in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
@@ -481,6 +566,11 @@ const server = http.createServer(async (req, res) => {
   if (vendor && !url.pathname.includes("..")) {
     const types = { js: "text/javascript; charset=utf-8", css: "text/css; charset=utf-8", woff2: "font/woff2" };
     file = [url.pathname.slice(1), types[vendor[2]]];
+  }
+  // Before and after pictures on the Bug fixes page (public/bugfixes).
+  const shot = ["GET", "HEAD"].includes(req.method) && /^\/bugfixes\/[\w.-]+\.(webp|jpg|png)$/.exec(url.pathname);
+  if (shot && !url.pathname.includes("..")) {
+    file = [url.pathname.slice(1), { webp: "image/webp", jpg: "image/jpeg", png: "image/png" }[shot[1]]];
   }
   let body;
   try {
