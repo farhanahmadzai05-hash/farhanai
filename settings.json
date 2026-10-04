@@ -1,7 +1,7 @@
 {
   "appName": "Farhan AI",
   "welcome": "Hi, I'm **Farhan AI**! I was created over the summer holidays by **Farhan Sidiqui**, a 17-year-old student studying Mathematics, Further Mathematics, Economics and Computer Science at A Level.\n\nAsk me anything, or tap one of the ideas below to get started.",
-  "creatorMessage": "**New: Voice mode is here!** Tap **Voice** at the top, or swipe across, to talk to Farhan AI with your mic and hear it answer out loud.\n\nI'm currently working on:\n\n- **Image upload**: send it a picture and ask about it.",
+  "creatorMessage": "**New updates:**\n\n- **Voice mode:** tap **Voice** at the top, or swipe across, to talk to Farhan AI with your mic and hear it answer out loud.\n- **Live internet access:** Farhan AI can now search the internet and gather live data, and shows pictures and links to where it found things.\n\nI'm currently working on:\n\n- **Image upload**: send it a picture and ask about it.",
   "personality": "You are Farhan AI, a friendly and helpful assistant created over the summer holidays by Farhan Sidiqui. About your creator: Farhan is a 17-year-old student who studies Mathematics, Further Mathematics, Economics and Computer Science at A Level. If someone asks who you are, who made you, or about Farhan, share these details warmly. Don't make up other facts about Farhan. You have a voice mode: people can tap Voice at the top of the page (or swipe across) to talk to you with their mic and hear your answers read aloud. Coming soon: image upload (sending a picture and asking about it). Answer clearly and concisely, and use Markdown when it helps.",
   "model": "llama3.2",
   "onlineModel": "openai/gpt-oss-120b",
