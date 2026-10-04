@@ -48,9 +48,47 @@
   synth.addEventListener?.("voiceschanged", pickVoice);
 
   // Turn Markdown into something that sounds right when read aloud.
+  // Reads LaTeX maths the way a person would say it: \frac{a}{b} -> "a over b", x^2 -> "x squared".
+  function mathToWords(tex) {
+    let t = tex
+      .replace(/\\(left|right|[bB]igg?[lr]?)\b/g, "")
+      .replace(/\^\{?2\}?/g, " squared ")
+      .replace(/\^\{?3\}?/g, " cubed ")
+      .replace(/\^\{([^{}]*)\}|\^(\w)/g, " to the power of $1$2 ")
+      .replace(/\\sqrt\{([^{}]*)\}/g, " the square root of $1 ");
+    for (let i = 0; i < 4; i++) t = t.replace(/\\[dt]?frac\{([^{}]*)\}\{([^{}]*)\}/g, " ($1) over ($2) ");
+    return t
+      .replace(/\b([a-zA-Z])'?\(([^()]*)\)/g, (m, f, x) => ` ${f}${m.includes("'") ? " prime" : ""} of ${x} `)
+      .replace(/\(\s*([\w.]+)\s*\)/g, " $1 ")
+      .replace(/\\lim_\{([^{}]*)\}/g, " the limit as $1 of ")
+      .replace(/\\to\b|\\rightarrow\b/g, " tends to ")
+      .replace(/_\{([^{}]*)\}|_(\w)/g, " $1$2 ")
+      .replace(/\\(cdot|times)\b/g, " times ")
+      .replace(/\\div\b/g, " divided by ")
+      .replace(/\\pm\b/g, " plus or minus ")
+      .replace(/\\infty\b/g, " infinity ")
+      .replace(/\\(leq?)\b/g, " is less than or equal to ")
+      .replace(/\\(geq?)\b/g, " is greater than or equal to ")
+      .replace(/\\neq?\b/g, " is not equal to ")
+      .replace(/\\approx\b/g, " is approximately ")
+      .replace(/\\(alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|phi|omega|Delta)\b/g, " $1 ")
+      .replace(/\\[a-zA-Z]+/g, " ")
+      .replace(/[{}\\]/g, "")
+      .replace(/'/g, " prime ")
+      .replace(/=/g, " equals ")
+      .replace(/\+/g, " plus ")
+      .replace(/(^|[\s(])-/g, "$1minus ")
+      .replace(/-/g, " minus ")
+      .replace(/\s+/g, " ");
+  }
+
+  window.__speakable = (t) => speakable(t); // used by the tests
   function speakable(text) {
     return text
       .replace(/```[\s\S]*?(```|$)/g, " I've put the code in the chat. ")
+      .replace(MATH_PATTERN, (m, dd, sq, rd, d) => ` ${mathToWords(dd ?? sq ?? rd ?? d)} `)
+      .replace(/^\s*\|?[-:| ]+\|[-:| ]*$/gm, "")
+      .replace(/\|/g, ", ")
       .replace(/`([^`]*)`/g, "$1")
       .replace(/\*\*|__|\*|#+\s/g, "")
       .replace(/^\s*[-•]\s+/gm, "")
@@ -86,6 +124,9 @@
         buffer += chunk;
         // Don't split inside a code block.
         if ((buffer.match(/```/g) || []).length % 2) return;
+        // Or inside a maths block that hasn't finished yet.
+        const count = (re) => (buffer.match(re) || []).length;
+        if (count(/\$\$/g) % 2 || count(/\\\[/g) > count(/\\\]/g) || count(/\\\(/g) > count(/\\\)/g)) return;
         const m = buffer.match(/^([\s\S]*?[.!?:](?=\s)|[\s\S]*?\n)/);
         if (m && m[0].trim().length > 1) {
           say(m[0]);

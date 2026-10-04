@@ -315,6 +315,10 @@ function timeNow(timeZone) {
   return `The current date and time for the user is ${now} (${zone} time).`;
 }
 
+// How answers should be laid out. The page renders Markdown and LaTeX maths.
+const FORMAT_RULES =
+  "Format answers like a polished chat assistant. Start with the direct answer, then explain. Use short paragraphs, **bold** for key terms, ## headings only for longer answers, numbered lists for steps (1., 2., 3.), bullet points for lists, Markdown tables for data or comparisons, and fenced code blocks with a language name for code. Write all maths in LaTeX: inline as \\( ... \\) and worked equations on their own line as $$ ... $$. For maths problems, show clear numbered steps and finish with the final answer in bold or in a $$ ... $$ block. Don't pad answers; match the length to the question.";
+
 const SEARCH_RULES =
   "You can search the internet with the web_search tool. Use it whenever a question is about something current or checkable: news, sports results and scores, who won or is winning something, prices, weather, recent events, or anything that may have changed since your training. Also use it when the user asks you to look something up. Answer from the search results, cite them inline like [1] or [2] using the result numbers, and say plainly if the results don't answer the question. Never invent scores, dates, names or facts. The page automatically shows the user pictures and links from your searches, so don't paste image or link URLs yourself.";
 
@@ -392,7 +396,7 @@ async function handleChat(req, res) {
       role: m.role === "assistant" ? "assistant" : "user",
       content: String(m.content ?? "").slice(0, 8000),
     }));
-    const system = [SYSTEM_PROMPT, timeNow(timeZone), ONLINE ? SEARCH_RULES : ""].filter(Boolean).join("\n\n");
+    const system = [SYSTEM_PROMPT, FORMAT_RULES, timeNow(timeZone), ONLINE ? SEARCH_RULES : ""].filter(Boolean).join("\n\n");
     const history = [{ role: "system", content: system }, ...convo];
     let full = "";
     let searches = 0;
@@ -471,7 +475,13 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify(await checkModel()));
   }
-  const file = ["GET", "HEAD"].includes(req.method) && STATIC_FILES[url.pathname];
+  let file = ["GET", "HEAD"].includes(req.method) && STATIC_FILES[url.pathname];
+  // Libraries in public/vendor (Markdown, maths and safety helpers) and their fonts.
+  const vendor = ["GET", "HEAD"].includes(req.method) && /^\/vendor\/(fonts\/)?[\w.-]+\.(js|css|woff2)$/.exec(url.pathname);
+  if (vendor && !url.pathname.includes("..")) {
+    const types = { js: "text/javascript; charset=utf-8", css: "text/css; charset=utf-8", woff2: "font/woff2" };
+    file = [url.pathname.slice(1), types[vendor[2]]];
+  }
   let body;
   try {
     body = file && (await readFile(path.join(PUBLIC_DIR, file[0])));

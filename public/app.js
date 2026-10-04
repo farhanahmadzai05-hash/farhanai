@@ -50,8 +50,42 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 }
 
-// Minimal, safe Markdown: code blocks, inline code, bold, italics, paragraphs.
+// Turns the AI's Markdown into nicely formatted HTML, like ChatGPT: headings, numbered
+// lists, tables, code blocks and maths. Maths written in LaTeX (\( \), \[ \], $ and $$)
+// is drawn with KaTeX. Everything is cleaned with DOMPurify so a reply can't run code.
+const MATH_PATTERN = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|(?<![\\$\w])\$(?!\s)([^$\n]+?)(?<!\s)\$(?![\w$])/g;
+
+function renderMath(tex, display) {
+  try {
+    return katex.renderToString(tex.trim(), { displayMode: display, throwOnError: false, output: "html", strict: "ignore" });
+  } catch {
+    return escapeHtml(tex);
+  }
+}
+
 function renderMarkdown(text) {
+  if (!window.marked || !window.DOMPurify) return renderBasic(text);
+  // Set code aside so a $ or \( inside code isn't mistaken for maths.
+  const code = [];
+  let source = text.replace(/(```[\s\S]*?(?:```|$)|`[^`\n]+`)/g, (m) => `\u0001C${code.push(m) - 1}\u0001`);
+  // Set maths aside so Markdown doesn't mangle it (an _ or * in maths would turn into italics).
+  const maths = [];
+  source = source.replace(MATH_PATTERN, (m, dd, sq, rd, d) => {
+    const display = dd !== undefined || sq !== undefined;
+    const tex = dd ?? sq ?? rd ?? d;
+    if (!window.katex) return m;
+    maths.push(renderMath(tex, display));
+    const token = `MATHTOKEN${maths.length - 1}X`;
+    return display ? `\n\n${token}\n\n` : token;
+  });
+  source = source.replace(/\u0001C(\d+)\u0001/g, (m, i) => code[i]);
+  let html = DOMPurify.sanitize(marked.parse(source, { gfm: true, breaks: true }), { ADD_ATTR: ["target"] });
+  html = html.replace(/<p>\s*MATHTOKEN(\d+)X\s*<\/p>/g, (m, i) => maths[i]).replace(/MATHTOKEN(\d+)X/g, (m, i) => maths[i]);
+  return html.replace(/<a href=/g, '<a target="_blank" rel="noopener noreferrer" href=');
+}
+
+// Simple fallback used if the Markdown library didn't load.
+function renderBasic(text) {
   const parts = text.split(/```(\w*)\n?([\s\S]*?)(?:```|$)/g);
   let html = "";
   for (let i = 0; i < parts.length; i += 3) {
@@ -225,6 +259,13 @@ async function send(text, hooks = {}) {
 
   let replyText = "";
   let finished = false;
+  let renderQueued = false;
+  const renderAnswer = () => {
+    renderQueued = false;
+    if (!replyText) return;
+    answerEl.innerHTML = linkCitations(renderMarkdown(replyText), links);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  };
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
@@ -251,8 +292,10 @@ async function send(text, hooks = {}) {
           stopWaiting();
           replyText += data.text;
           hooks.onText?.(data.text);
-          answerEl.innerHTML = linkCitations(renderMarkdown(replyText), links);
-          messagesEl.scrollTop = messagesEl.scrollHeight;
+          if (!renderQueued) {
+            renderQueued = true;
+            requestAnimationFrame(renderAnswer); // redraw at most once per frame while it streams
+          }
         } else if (event === "status") {
           statusText = data.text;
           hooks.onStatus?.(data.text);
@@ -262,6 +305,7 @@ async function send(text, hooks = {}) {
           showSources(sourcesEl, data);
           messagesEl.scrollTop = messagesEl.scrollHeight;
         } else if (event === "done") {
+          renderAnswer();
           history.push({ role: "assistant", content: data.content });
           if (!replyText) answerEl.textContent = "(The model sent back an empty reply. Try asking again.)";
           finished = true;
