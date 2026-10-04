@@ -17,12 +17,12 @@ const BUG_FIXES = [
   },
   {
     title: "“The model sent back an empty reply”",
-    date: "October 2026",
+    date: "September 2026",
     text: "Sometimes, after searching the internet, the AI read the results and then wrote nothing. Now, if that happens, Farhan AI hands it the search results again and asks for the answer straight away.",
   },
   {
     title: "“Lots of people are chatting right now”",
-    date: "October 2026",
+    date: "September 2026",
     text: "The free AI service only allows so much use per minute, and when it ran out you got a red error. Now Farhan AI waits a moment if the wait is short, or quietly switches to another free AI model so you still get an answer.",
   },
   {
