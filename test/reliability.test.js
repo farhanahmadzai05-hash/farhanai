@@ -14,31 +14,101 @@ const answer = (events) => events.find((e) => e.event === "done")?.data.content;
 const errorOf = (events) => events.find((e) => e.event === "error")?.data.message;
 
 // ---------- Who is the visitor? ----------
+// These tests SIMULATE a trusted proxy by writing X-Forwarded-For the way a proxy that appends
+// is expected to: whatever the visitor sent, then ", <the address the proxy saw>". They prove
+// the server reads that chain correctly. They can't prove Render really behaves this way;
+// that is checked in production from the "Proxy check" log line.
 
-test("on Render, a made-up X-Forwarded-For can't dodge the rate limit", async (t) => {
-  const groq = await startFakeGroq(t, (req, body, res) => streamText(res, ["ok"]));
-  const { base } = await startApp(t, groqEnv(groq, { RENDER: "true", RATE_LIMIT: "2" }));
-  // Render's proxy adds the real address at the end; anything before it came from the visitor.
+// The header a trusted proxy would pass on: the visitor's own value (if any), then the real address.
+const viaProxy = (visitorSupplied, actual) => (visitorSupplied ? `${visitorSupplied}, ${actual}` : actual);
+
+async function statusesFor(base, headerValues) {
   const statuses = [];
-  for (let i = 0; i < 4; i++) {
-    const res = await chat(base, { headers: { "X-Forwarded-For": `10.0.0.${i}, 198.51.100.7` } });
+  for (const value of headerValues) {
+    const res = await chat(base, { headers: value === undefined ? {} : { "X-Forwarded-For": value } });
     statuses.push(res.status);
     await res.text();
   }
-  assert.deepEqual(statuses, [200, 200, 429, 429]);
+  return statuses;
+}
+
+test("behind a trusted proxy, changing the visitor-supplied X-Forwarded-For can't reset the limit", async (t) => {
+  const groq = await startFakeGroq(t, (req, body, res) => streamText(res, ["ok"]));
+  const { base } = await startApp(t, groqEnv(groq, { RENDER: "true", RATE_LIMIT: "2" }));
+  const actual = "198.51.100.7"; // the one address the proxy saw for every request below
+  const statuses = await statusesFor(base, [
+    viaProxy(undefined, actual), // the visitor sent no header of their own
+    viaProxy("10.0.0.1", actual),
+    viaProxy("10.0.0.2, 10.0.0.3", actual), // several made-up hops
+    viaProxy("not-an-address", actual),
+    viaProxy("198.51.100.8", actual), // pretending to be another real visitor
+    viaProxy("", actual),
+  ]);
+  assert.deepEqual(statuses, [200, 200, 429, 429, 429, 429]);
 });
 
-test("on Render, two real visitors get separate allowances", async (t) => {
+test("behind a trusted proxy, two different real addresses get separate allowances", async (t) => {
   const groq = await startFakeGroq(t, (req, body, res) => streamText(res, ["ok"]));
   const { base } = await startApp(t, groqEnv(groq, { RENDER: "true", RATE_LIMIT: "1" }));
-  const a = await chat(base, { headers: { "X-Forwarded-For": "198.51.100.1" } });
-  const b = await chat(base, { headers: { "X-Forwarded-For": "198.51.100.2" } });
-  assert.equal(a.status, 200);
-  assert.equal(b.status, 200);
-  await Promise.all([a.text(), b.text()]);
-  const again = await chat(base, { headers: { "X-Forwarded-For": "198.51.100.1" } });
-  assert.equal(again.status, 429);
-  await again.text();
+  const visitorA = "198.51.100.1";
+  const visitorB = "198.51.100.2";
+  // Both send the SAME made-up value; only the address the proxy appends tells them apart.
+  const forged = "203.0.113.9";
+  assert.deepEqual(await statusesFor(base, [viaProxy(forged, visitorA), viaProxy(forged, visitorB)]), [200, 200]);
+  // Each is now at their own limit, whatever they put in front.
+  assert.deepEqual(await statusesFor(base, [viaProxy("203.0.113.10", visitorA), viaProxy(undefined, visitorB)]), [429, 429]);
+  // A third real visitor who claims to be A in their own part of the header is still separate.
+  assert.deepEqual(await statusesFor(base, [viaProxy(visitorA, "198.51.100.3")]), [200]);
+});
+
+test("with two trusted proxies, the address the outer proxy saw is used", async (t) => {
+  const groq = await startFakeGroq(t, (req, body, res) => streamText(res, ["ok"]));
+  const { base } = await startApp(t, groqEnv(groq, { TRUST_PROXY_HOPS: "2", RATE_LIMIT: "1" }));
+  const edge = "192.0.2.50"; // the outer proxy's own address, added by the inner proxy
+  const twoHops = (visitorSupplied, actual) => `${viaProxy(visitorSupplied, actual)}, ${edge}`;
+  assert.deepEqual(
+    await statusesFor(base, [twoHops("10.0.0.1", "198.51.100.1"), twoHops("10.0.0.2", "198.51.100.1"), twoHops("10.0.0.1", "198.51.100.2")]),
+    [200, 429, 200],
+  );
+});
+
+test("behind a trusted proxy, a missing X-Forwarded-For shares one allowance", async (t) => {
+  const groq = await startFakeGroq(t, (req, body, res) => streamText(res, ["ok"]));
+  const { base, logs } = await startApp(t, groqEnv(groq, { RENDER: "true", RATE_LIMIT: "2" }));
+  assert.deepEqual(await statusesFor(base, [undefined, undefined, undefined]), [200, 200, 429]);
+  assert.match(logs(), /Proxy check: X-Forwarded-For is missing/);
+});
+
+test("behind a trusted proxy, a malformed or too-short chain shares one allowance", async (t) => {
+  const groq = await startFakeGroq(t, (req, body, res) => streamText(res, ["ok"]));
+  const { base, logs } = await startApp(t, groqEnv(groq, { TRUST_PROXY_HOPS: "2", RATE_LIMIT: "2" }));
+  // None of these has a valid address in the trusted position, so changing them can't help.
+  const statuses = await statusesFor(base, [
+    "garbage, 192.0.2.50",
+    "198.51.100.1:443, 192.0.2.50", // an address with a port isn't a plain IP address
+    "192.0.2.50", // only one entry, but two proxies are expected
+    " , , ",
+  ]);
+  assert.deepEqual(statuses, [200, 200, 429, 429]);
+  assert.match(logs(), /Proxy check: entry number 2 from the end of X-Forwarded-For isn't a valid IP address/);
+  assert.match(logs(), /Proxy check: X-Forwarded-For has 1 address\(es\) but TRUST_PROXY_HOPS is 2/);
+});
+
+test("the proxy check log never contains anyone's address", async (t) => {
+  const groq = await startFakeGroq(t, (req, body, res) => streamText(res, ["ok"]));
+  const { base, logs } = await startApp(t, groqEnv(groq, { RENDER: "true" }));
+  await statusesFor(base, [
+    viaProxy(undefined, "198.51.100.76"),
+    viaProxy("10.9.8.7", "198.51.100.77"), // a made-up hop in front: one more address, so a new line
+    viaProxy("10.9.8.6", "198.51.100.78"), // same count as before: no new line
+    "bad-entry",
+    undefined,
+  ]);
+  const checks = logs().split("\n").filter((line) => line.startsWith("Proxy check:"));
+  assert.equal(checks.length, 4, "one line each for 1 and 2 addresses, malformed and missing");
+  assert.match(checks[0], /has 1 address\(es\); using number 1 from the end .* valid IP address/);
+  assert.match(checks[1], /has 2 address\(es\); using number 1 from the end .* valid IP address/);
+  for (const line of checks) assert.doesNotMatch(line, /\d+\.\d+\.\d+\.\d+|bad-entry|127\.0\.0\.1|::/);
 });
 
 test("away from a proxy, X-Forwarded-For is ignored completely", async (t) => {

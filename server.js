@@ -2,6 +2,7 @@
 // On your PC it uses Ollama (https://ollama.com). Online (when GROQ_API_KEY is set)
 // it uses Groq's free API (https://console.groq.com) instead.
 import http from "node:http";
+import net from "node:net";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -554,27 +555,62 @@ function parseLine(text) {
 }
 
 // ---------- Who is asking, and how much they may ask ----------
-// The visitor's address. Behind a proxy, each trusted proxy adds the address it received the
-// request from to the end of X-Forwarded-For, so the entry TRUST_PROXY_HOPS from the end is
-// the last one a visitor can't have written themselves. Anything before it is ignored.
-let proxyChecked = false;
+// How the visitor is identified, and what that assumes about the proxy in front of the app:
+//
+// - Each trusted proxy adds the address it received the request from to the END of
+//   X-Forwarded-For, after anything the visitor's own browser or tools put there. With
+//   TRUST_PROXY_HOPS trusted proxies, the entry that many places from the end is the visitor's
+//   real address; everything before it could be made up, so it is ignored. Render is assumed
+//   to be one such proxy (TRUST_PROXY_HOPS=1 when RENDER is set). That is an assumption about
+//   Render, checked in production with the "Proxy check" log line below, not by the tests.
+// - If X-Forwarded-For is missing, has fewer entries than TRUST_PROXY_HOPS, or the chosen entry
+//   isn't a valid IP address, the request is counted under one shared "unidentified" allowance.
+//   That can make the limit stricter for those visitors, but never lets anyone dodge it.
+// - With no trusted proxy (on your PC), X-Forwarded-For is ignored and the connection's own
+//   address is used.
+//
+// "Proxy check" lines are logged once per start-up for each case seen (and for each different
+// number of addresses, up to 10 lines), so a test request with a made-up header shows up too.
+// They hold only counts, yes/no answers and header names, never anyone's address.
+const proxyNotes = new Set();
+function proxyNote(kind, text) {
+  if (proxyNotes.has(kind) || proxyNotes.size >= 10) return;
+  proxyNotes.add(kind);
+  console.log(`Proxy check: ${text}`);
+}
+
 function visitorAddress(req) {
   const direct = req.socket.remoteAddress || "unknown";
   if (TRUST_PROXY_HOPS <= 0) return direct;
-  const hops = String(req.headers["x-forwarded-for"] || "")
+  const header = req.headers["x-forwarded-for"];
+  const listed = String(header ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  if (!proxyChecked) {
-    // Once per start-up: what the proxy sends, without anyone's address, so the setting can be checked.
-    proxyChecked = true;
-    const extra = ["true-client-ip", "cf-connecting-ip", "x-real-ip"].filter((h) => req.headers[h]);
-    console.log(
-      `Proxy check: X-Forwarded-For has ${hops.length} address(es); using number ${TRUST_PROXY_HOPS} from the end ` +
-        `(TRUST_PROXY_HOPS). Other address headers: ${extra.join(", ") || "none"}.`,
-    );
+  const others = ["true-client-ip", "cf-connecting-ip", "x-real-ip"].filter((h) => req.headers[h]).join(", ") || "none";
+  const shared = `unidentified via ${direct}`;
+  if (!listed.length) {
+    proxyNote("missing", `X-Forwarded-For is missing or empty, so these requests share one allowance. Other address headers: ${others}.`);
+    return shared;
   }
-  return hops.at(-TRUST_PROXY_HOPS) || direct;
+  if (listed.length < TRUST_PROXY_HOPS) {
+    proxyNote(
+      "short",
+      `X-Forwarded-For has ${listed.length} address(es) but TRUST_PROXY_HOPS is ${TRUST_PROXY_HOPS}, so these requests share one allowance.`,
+    );
+    return shared;
+  }
+  const chosen = listed.at(-TRUST_PROXY_HOPS);
+  if (!net.isIP(chosen)) {
+    proxyNote("malformed", `entry number ${TRUST_PROXY_HOPS} from the end of X-Forwarded-For isn't a valid IP address, so these requests share one allowance.`);
+    return shared;
+  }
+  proxyNote(
+    `ok-${listed.length}`,
+    `X-Forwarded-For has ${listed.length} address(es); using number ${TRUST_PROXY_HOPS} from the end (TRUST_PROXY_HOPS), ` +
+      `which is a valid IP address. Other address headers: ${others}.`,
+  );
+  return chosen;
 }
 
 // At most RATE_LIMIT messages per visitor every 10 minutes, and MAX_ACTIVE_PER_VISITOR replies

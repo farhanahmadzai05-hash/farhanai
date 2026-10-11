@@ -106,6 +106,15 @@ These environment variables override settings.json, for example in cmd: `set OLL
 | `SEARCH_TIMEOUT_MS` | `8000` | How long a web search may take before the answer carries on without it |
 | `HEARTBEAT_MS` | `15000` | How often a quiet reply sends a keep-alive ping so proxies don't close it |
 
+### How visitors are told apart (rate limits)
+
+The limits above are counted per visitor address. Online, the server sits behind Render's proxy, so the address it sees on the connection is the proxy's, not the visitor's.
+
+- **What it assumes:** each trusted proxy adds the address it received the request from to the **end** of the `X-Forwarded-For` header, after anything the visitor sent. With `TRUST_PROXY_HOPS` trusted proxies (1 on Render), the entry that many places from the end is used. Everything before it could be made up by the visitor, so it is ignored. Changing it can't reset a limit.
+- **If the header is missing or empty, has fewer entries than `TRUST_PROXY_HOPS`, or the chosen entry isn't a valid IP address** (for example `garbage` or `1.2.3.4:443`), the request is counted under one shared "unidentified" allowance. That can be stricter for those visitors, but it never lets anyone get around the limit.
+- **On your PC** (no proxy), `X-Forwarded-For` is ignored and the connection's own address is used.
+- **Checking it on Render:** this is an assumption about Render, and the automated tests only simulate a proxy. They prove the server reads the header correctly, not that Render writes it this way. After a deploy, open the service's **Logs** in Render and send one chat message. Look for a line starting with `Proxy check:`. It contains only counts, yes/no answers and header names, never an address. Expected on Render: `X-Forwarded-For has 1 address(es); using number 1 from the end (TRUST_PROXY_HOPS), which is a valid IP address.` If you send a test request with your own made-up header (for example with `curl -H "X-Forwarded-For: 10.0.0.1"`), the count should go up by one, which shows Render added its address after yours. A line saying the header is missing, too short or not a valid address means `TRUST_PROXY_HOPS` needs changing.
+
 ## How it works
 
 - `server.js` serves the chat page and passes your conversation to Ollama's local API, streaming the reply back as it's written. It has no dependencies, so there's no `npm install` step.
