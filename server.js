@@ -39,6 +39,65 @@ const SYSTEM_PROMPT =
   settings.personality ||
   "You are a friendly, helpful assistant. Answer clearly and concisely, and use Markdown when it helps.";
 
+// ---------- Limits and timeouts ----------
+// Each can be changed in the host's environment settings without touching the code.
+const setting = (name, fallback) => {
+  const value = Number(process.env[name]);
+  return process.env[name] !== undefined && process.env[name] !== "" && Number.isFinite(value) ? value : fallback;
+};
+// How many proxies in front of the app add the visitor's address to X-Forwarded-For.
+// Render has one, and sets RENDER; on your PC there are none, so the header is ignored.
+const TRUST_PROXY_HOPS = setting("TRUST_PROXY_HOPS", process.env.RENDER ? 1 : 0);
+const RATE_LIMIT = setting("RATE_LIMIT", 30); // messages per visitor every 10 minutes
+const MAX_ACTIVE_PER_VISITOR = setting("MAX_ACTIVE_PER_VISITOR", 1); // replies running at once
+const DAILY_AI_CALLS = setting("DAILY_AI_CALLS", 1000); // AI requests for the whole site per day (0 = no limit)
+const FIRST_BYTE_TIMEOUT_MS = setting("GROQ_FIRST_BYTE_TIMEOUT_MS", 20_000); // wait for the AI to start
+const IDLE_TIMEOUT_MS = setting("GROQ_IDLE_TIMEOUT_MS", 30_000); // longest pause allowed mid-reply
+const SEARCH_TIMEOUT_MS = setting("SEARCH_TIMEOUT_MS", 8000);
+const HEARTBEAT_MS = setting("HEARTBEAT_MS", 15_000); // keeps proxies from closing a quiet stream
+
+// An error whose message is safe and useful to show visitors. Anything else is logged on the
+// server and replaced by a general message, so provider internals never reach the page.
+class VisitorError extends Error {}
+const GENERAL_ERROR = "Something went wrong on Farhan AI's side. Please try again in a moment.";
+const RESTING = "Farhan AI is resting after a busy day. Please come back tomorrow.";
+class TimedOut extends Error {}
+
+// A signal that fires when `parent` does or after `ms`, whichever is first. restart() sets a
+// new time limit from now; done() tidies up.
+function deadline(parent, ms, what) {
+  const controller = new AbortController();
+  const stop = () => controller.abort(parent.reason);
+  if (parent.aborted) stop();
+  else parent.addEventListener("abort", stop, { once: true });
+  let timer;
+  const restart = (limit, label) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(new TimedOut(`${label} took longer than ${limit}ms`)), limit);
+  };
+  restart(ms, what);
+  return {
+    signal: controller.signal,
+    restart,
+    done: () => {
+      clearTimeout(timer);
+      parent.removeEventListener("abort", stop);
+    },
+  };
+}
+
+// The site-wide daily allowance of AI requests, so no one can spend the free quota for everyone.
+const budget = { day: "", used: 0 };
+function budgetSpent() {
+  const today = new Date().toISOString().slice(0, 10); // resets at midnight UTC
+  if (budget.day !== today) Object.assign(budget, { day: today, used: 0 });
+  return DAILY_AI_CALLS > 0 && budget.used >= DAILY_AI_CALLS;
+}
+function spendAiCall() {
+  if (budgetSpent()) throw new VisitorError(RESTING);
+  budget.used++;
+}
+
 const STATIC_FILES = {
   "/": ["index.html", "text/html; charset=utf-8"],
   "/app.js": ["app.js", "text/javascript; charset=utf-8"],
@@ -106,48 +165,60 @@ async function* streamOllama(messages, signal) {
     });
   } catch (err) {
     if (signal.aborted) throw err;
-    throw new Error("Can't reach Ollama. Make sure the Ollama app is installed and running, then try again.");
+    throw new VisitorError("Can't reach Ollama. Make sure the Ollama app is installed and running, then try again.");
   }
   if (!upstream.ok) {
     const detail = (await upstream.json().catch(() => ({}))).error || `status ${upstream.status}`;
     if (/not found/i.test(detail)) {
-      throw new Error(`The model "${MODEL}" isn't downloaded yet. In a terminal, run: ollama pull ${MODEL}`);
+      throw new VisitorError(`The model "${MODEL}" isn't downloaded yet. In a terminal, run: ollama pull ${MODEL}`);
     }
-    throw new Error(`Ollama error: ${detail}`);
+    throw new VisitorError(`Ollama error: ${detail}`);
   }
   // Ollama streams one JSON object per line.
   for await (const line of lines(upstream.body)) {
-    const part = JSON.parse(line);
-    if (part.error) throw new Error(`Ollama error: ${part.error}`);
+    const part = parseLine(line);
+    if (!part) continue;
+    if (part.error) throw new VisitorError(`Ollama error: ${part.error}`);
     if (part.message?.content) yield part.message.content;
   }
 }
 
-// Yields the reply from Groq's OpenAI-compatible API piece by piece.
+// ---------- Groq ----------
 // Groq models we'd like to use online, best first. If the chosen model isn't
 // available to your Groq account, the site switches to one of these by itself.
 const GROQ_PREFERRED = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
 let groqModel = MODEL;
 
 async function pickAvailableGroqModel() {
-  const res = await fetch(`${GROQ_URL}/models`, { headers: { Authorization: `Bearer ${GROQ_API_KEY}` } });
+  const res = await fetch(`${GROQ_URL}/models`, {
+    headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
+    signal: AbortSignal.timeout(5000),
+  });
   const ids = ((await res.json().catch(() => ({}))).data || []).map((m) => m.id);
   const chat = ids.filter((id) => !/whisper|tts|guard|playai|orpheus/i.test(id));
   return GROQ_PREFERRED.find((id) => chat.includes(id)) || chat[0];
 }
 
-async function callGroq(messages, signal, extra = {}, model = groqModel) {
+// Starts one request to Groq and resolves once Groq starts answering. Gives up after
+// FIRST_BYTE_TIMEOUT_MS. Every request counts against the site's daily budget.
+// Returns the call: call.res is Groq's response, call.restart() changes the time limit and
+// call.done() tidies up.
+async function callGroq(messages, signal, extra, model) {
+  spendAiCall();
+  const call = deadline(signal, FIRST_BYTE_TIMEOUT_MS, `Groq model "${model}" starting to answer`);
   try {
-    return await fetch(`${GROQ_URL}/chat/completions`, {
+    const res = await fetch(`${GROQ_URL}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_API_KEY}` },
       body: JSON.stringify({ model, stream: true, messages, ...extra }),
-      signal,
+      signal: call.signal,
     });
+    return Object.assign(call, { res });
   } catch (err) {
+    call.done();
     if (signal.aborted) throw err;
-    console.log(`Can't reach Groq: ${err.message}`);
-    throw new Error("Can't reach the AI service right now. Please try again in a moment.");
+    if (call.signal.reason instanceof TimedOut) throw call.signal.reason;
+    throw new Error(`Can't reach Groq: ${err.message}`);
   }
 }
 
@@ -155,6 +226,7 @@ async function callGroq(messages, signal, extra = {}, model = groqModel) {
 // is busy, wait a moment if the wait is short; otherwise answer with the next free model, which
 // has its own separate allowance. Busy models are skipped until their limit resets.
 const busyUntil = new Map();
+const rest = (model, seconds) => busyUntil.set(model, Date.now() + Math.min(seconds, 24 * 3600) * 1000);
 const SHORT_WAIT = Number(process.env.GROQ_SHORT_WAIT ?? 6); // seconds worth waiting for
 const sleep = (ms, signal) =>
   new Promise((done, fail) => {
@@ -175,79 +247,20 @@ function retryAfter(headers) {
   return found.length ? found[0] : 60;
 }
 
-// Yields the reply from Groq's OpenAI-compatible API piece by piece: strings for text, and
-// at the end {toolCalls} if the model asked to use a tool (such as web search) instead.
-let toolsWork = true; // switched off if the model on this account can't use tools
-async function* streamGroq(messages, signal, tools) {
-  const extra = () => (tools && toolsWork ? { tools, tool_choice: "auto" } : {});
-  const ready = (m) => !(busyUntil.get(m) > Date.now());
-  // The main model first, then the backups, skipping any that are busy right now.
-  const queue = [groqModel, ...GROQ_PREFERRED.filter((m) => m !== groqModel)];
-  let candidates = queue.filter(ready);
-  if (!candidates.length) candidates = [groqModel];
-  let upstream;
-  let detail = "";
-  let waited = false;
-  for (let i = 0; i < candidates.length; i++) {
-    const model = candidates[i];
-    upstream = await callGroq(messages, signal, extra(), model);
-    detail = "";
-    if (upstream.status === 404 || upstream.status === 400) {
-      const error = (await upstream.json().catch(() => ({}))).error || {};
-      detail = [error.message, error.code].filter(Boolean).join(" ");
-      // The model was retired or isn't on this account's plan.
-      if (/model/i.test(detail) && /(not exist|not have access|decommissioned|deprecated|not found)/i.test(detail)) {
-        busyUntil.set(model, Date.now() + 60 * 60 * 1000);
-        if (model === groqModel) {
-          const replacement = await pickAvailableGroqModel().catch(() => null);
-          if (replacement && replacement !== groqModel) {
-            console.log(`Groq model "${groqModel}" isn't available (${detail}). Switching to "${replacement}".`);
-            groqModel = replacement;
-            candidates = [...candidates.slice(0, i + 1), replacement, ...candidates.slice(i + 1).filter((m) => m !== replacement)];
-          }
-        }
-        continue;
-      }
-      if (tools && toolsWork && /tool|function/i.test(detail)) {
-        // The model fumbled the search request or can't search: answer without searching.
-        console.log(`Answering without web search this time (${detail}).`);
-        if (/not support/i.test(detail)) toolsWork = false;
-        upstream = await callGroq(messages, signal, {}, model);
-        detail = "";
-      }
-    }
-    if (upstream.status === 429) {
-      const wait = retryAfter(upstream.headers);
-      detail = (await upstream.json().catch(() => ({}))).error?.message || "rate limited";
-      if (!waited && wait <= SHORT_WAIT) {
-        // Worth a short pause: try the same model again.
-        waited = true;
-        console.log(`Groq model "${model}" is busy; waiting ${wait.toFixed(1)}s.`);
-        yield { status: "Lots of people are chatting, one moment…" };
-        await sleep(Math.max(250, wait * 1000), signal);
-        i--;
-        continue;
-      }
-      busyUntil.set(model, Date.now() + Math.min(wait, 24 * 3600) * 1000);
-      console.log(`Groq model "${model}" is busy for ${Math.round(wait)}s (${detail}). Trying another model.`);
-      continue;
-    }
-    break;
-  }
-  if (!upstream.ok) {
-    detail ||= (await upstream.json().catch(() => ({}))).error?.message || `status ${upstream.status}`;
-    console.log(`Groq error (${upstream.status}): ${detail}`);
-    if (upstream.status === 401) throw new Error("The website's Groq API key is wrong or missing. Check GROQ_API_KEY in the host's settings.");
-    if (upstream.status === 429) throw new Error("Farhan AI is very busy right now. Please wait a minute and try again.");
-    throw new Error(`The AI service had a problem: ${detail}`);
-  }
-  // Server-sent events: lines like "data: {...}", ending with "data: [DONE]".
+// Reads Groq's streamed answer: strings for text, then {toolCalls} at the end if the model
+// asked to use a tool (such as web search). A pause longer than IDLE_TIMEOUT_MS ends it.
+async function* readGroq(res, call) {
   const calls = [];
-  for await (const line of lines(upstream.body)) {
+  const pause = "A pause in the AI's reply";
+  call.restart(IDLE_TIMEOUT_MS, pause);
+  // Server-sent events: lines like "data: {...}", ending with "data: [DONE]".
+  for await (const line of lines(res.body)) {
+    call.restart(IDLE_TIMEOUT_MS, pause);
     if (!line.startsWith("data:")) continue;
     const data = line.slice(5).trim();
     if (data === "[DONE]") break;
-    const parsed = JSON.parse(data);
+    const parsed = parseLine(data);
+    if (!parsed) continue;
     if (parsed.error) {
       // Groq gave up part way (for example, it garbled a search request). Stop here; the chat
       // handler asks again for a plain answer if nothing was written.
@@ -257,13 +270,126 @@ async function* streamGroq(messages, signal, tools) {
     const delta = parsed.choices?.[0]?.delta || {};
     if (delta.content) yield delta.content;
     for (const tc of delta.tool_calls || []) {
-      const call = (calls[tc.index ?? calls.length] ||= { id: "", type: "function", function: { name: "", arguments: "" } });
-      if (tc.id) call.id = tc.id;
-      if (tc.function?.name) call.function.name += tc.function.name;
-      if (tc.function?.arguments) call.function.arguments += tc.function.arguments;
+      const tool = (calls[tc.index ?? calls.length] ||= { id: "", type: "function", function: { name: "", arguments: "" } });
+      if (tc.id) tool.id = tc.id;
+      if (tc.function?.name) tool.function.name += tc.function.name;
+      if (tc.function?.arguments) tool.function.arguments += tc.function.arguments;
     }
   }
   if (calls.length) yield { toolCalls: calls.filter(Boolean) };
+}
+
+// Yields the reply from Groq piece by piece: strings for text, {status} for notes to show while
+// waiting, and {toolCalls} if the model asked to search. A model that fails before it has sent
+// anything is safe to replace with the next one; once words have reached the visitor, it isn't,
+// because trying again would repeat them.
+let toolsWork = true; // switched off if the model on this account can't use tools
+async function* streamGroq(messages, signal, tools) {
+  const extra = () => (tools && toolsWork ? { tools, tool_choice: "auto" } : {});
+  const ready = (m) => !(busyUntil.get(m) > Date.now());
+  // The main model first, then the backups, skipping any that are busy right now.
+  const queue = [groqModel, ...GROQ_PREFERRED.filter((m) => m !== groqModel)];
+  let candidates = queue.filter(ready);
+  if (!candidates.length) candidates = [groqModel];
+  let problem = "down"; // why the last model failed: "down", "busy" or "slow"
+  let waited = false;
+  for (let i = 0; i < candidates.length; i++) {
+    const model = candidates[i];
+    let call;
+    try {
+      call = await callGroq(messages, signal, extra(), model);
+      let upstream = call.res;
+      if (upstream.status === 404 || upstream.status === 400) {
+        const error = (await upstream.json().catch(() => ({}))).error || {};
+        const detail = [error.message, error.code].filter(Boolean).join(" ");
+        // The model was retired or isn't on this account's plan.
+        if (/model/i.test(detail) && /(not exist|not have access|decommissioned|deprecated|not found)/i.test(detail)) {
+          call.done();
+          rest(model, 3600);
+          if (model === groqModel) {
+            const replacement = await pickAvailableGroqModel().catch(() => null);
+            if (replacement && replacement !== groqModel) {
+              console.log(`Groq model "${groqModel}" isn't available (${detail}). Switching to "${replacement}".`);
+              groqModel = replacement;
+              candidates = [...candidates.slice(0, i + 1), replacement, ...candidates.slice(i + 1).filter((m) => m !== replacement)];
+            }
+          }
+          problem = "down";
+          continue;
+        }
+        if (tools && toolsWork && /tool|function/i.test(detail)) {
+          // The model fumbled the search request or can't search: answer without searching.
+          console.log(`Answering without web search this time (${detail}).`);
+          if (/not support/i.test(detail)) toolsWork = false;
+          call.done();
+          call = await callGroq(messages, signal, {}, model);
+          upstream = call.res;
+        } else {
+          console.log(`Groq error (${upstream.status}): ${detail}`);
+          throw new VisitorError("The AI service couldn't answer that message. Please try rephrasing it.");
+        }
+      }
+      if (upstream.status === 429) {
+        const wait = retryAfter(upstream.headers);
+        const detail = (await upstream.json().catch(() => ({}))).error?.message || "rate limited";
+        call.done();
+        problem = "busy";
+        if (!waited && wait <= SHORT_WAIT) {
+          // Worth a short pause: try the same model again.
+          waited = true;
+          console.log(`Groq model "${model}" is busy; waiting ${wait.toFixed(1)}s.`);
+          yield { status: "Lots of people are chatting, one moment…" };
+          await sleep(Math.max(250, wait * 1000), signal);
+          i--;
+          continue;
+        }
+        rest(model, wait);
+        console.log(`Groq model "${model}" is busy for ${Math.round(wait)}s (${detail}). Trying another model.`);
+        continue;
+      }
+      if (!upstream.ok) {
+        const detail = (await upstream.json().catch(() => ({}))).error?.message || `status ${upstream.status}`;
+        console.log(`Groq error (${upstream.status}) from "${model}": ${detail}`);
+        if (upstream.status === 401) throw new VisitorError("The website's Groq API key is wrong or missing. Check GROQ_API_KEY in the host's settings.");
+        // 413: too big for this model's per-request allowance; another model may have room.
+        if (upstream.status < 500 && upstream.status !== 413) throw new VisitorError("The AI service couldn't answer that message. Please try rephrasing it.");
+        // A problem on Groq's side: let another model answer.
+        call.done();
+        rest(model, 30);
+        problem = "down";
+        continue;
+      }
+    } catch (err) {
+      call?.done();
+      if (signal.aborted || err instanceof VisitorError) throw err;
+      console.log(`Groq model "${model}" failed before answering (${err.message}). Trying another model.`);
+      rest(model, 60);
+      problem = err instanceof TimedOut ? "slow" : "down";
+      continue;
+    }
+
+    // Groq has started answering.
+    let started = false;
+    try {
+      for await (const part of readGroq(call.res, call)) {
+        started = true;
+        yield part;
+      }
+      return;
+    } catch (err) {
+      if (signal.aborted) throw err;
+      const why = call.signal.reason instanceof TimedOut ? call.signal.reason.message : err.message;
+      console.log(`Groq model "${model}" stopped mid-reply (${why}).`);
+      if (started) throw new VisitorError("The reply stopped part way. Please try again.");
+      rest(model, 60);
+      problem = call.signal.reason instanceof TimedOut ? "slow" : "down";
+    } finally {
+      call.done();
+    }
+  }
+  if (problem === "busy") throw new VisitorError("Farhan AI is very busy right now. Please wait a minute and try again.");
+  if (problem === "slow") throw new VisitorError("The AI didn't answer in time. Please try again in a moment.");
+  throw new VisitorError("Can't reach the AI service right now. Please try again in a moment.");
 }
 
 // ---------- Web search ----------
@@ -347,16 +473,29 @@ async function searchWikipedia(query, signal) {
   };
 }
 
+// Each search service gets SEARCH_TIMEOUT_MS; one that takes longer counts as not working.
+async function withTimeout(signal, what, run) {
+  const limit = deadline(signal, SEARCH_TIMEOUT_MS, what);
+  try {
+    return await run(limit.signal);
+  } catch (err) {
+    if (signal.aborted) throw err;
+    throw limit.signal.reason instanceof TimedOut ? limit.signal.reason : err;
+  } finally {
+    limit.done();
+  }
+}
+
 async function webSearch(query, signal) {
   if (TAVILY_API_KEY) {
     try {
-      return await searchTavily(query, signal);
+      return await withTimeout(signal, "Tavily search", (s) => searchTavily(query, s));
     } catch (err) {
       if (signal.aborted) throw err;
       console.log(`${err.message}. Searching Wikipedia instead.`);
     }
   }
-  return searchWikipedia(query, signal);
+  return withTimeout(signal, "Wikipedia search", (s) => searchWikipedia(query, s));
 }
 
 // The current date and time where the visitor is, so "today" and "now" mean something.
@@ -403,50 +542,142 @@ async function* lines(body) {
   if (buffer.trim()) yield buffer.trim();
 }
 
-// Keeps one visitor from using up the free AI allowance: at most
-// RATE_LIMIT messages per IP address every 10 minutes.
-const RATE_LIMIT = Number(process.env.RATE_LIMIT) || 30;
-const recent = new Map();
-function allowed(req) {
-  const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress).split(",")[0].trim();
-  const now = Date.now();
-  const times = (recent.get(ip) || []).filter((t) => now - t < 10 * 60 * 1000);
-  if (times.length >= RATE_LIMIT) return false;
-  times.push(now);
-  recent.set(ip, times);
-  return true;
+// Reads one line of streamed JSON. A garbled line is skipped (and counted in the log) rather
+// than ending the whole reply.
+function parseLine(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    console.log(`Skipped a garbled line from the AI service (${text.length} characters).`);
+    return null;
+  }
 }
 
+// ---------- Who is asking, and how much they may ask ----------
+// The visitor's address. Behind a proxy, each trusted proxy adds the address it received the
+// request from to the end of X-Forwarded-For, so the entry TRUST_PROXY_HOPS from the end is
+// the last one a visitor can't have written themselves. Anything before it is ignored.
+let proxyChecked = false;
+function visitorAddress(req) {
+  const direct = req.socket.remoteAddress || "unknown";
+  if (TRUST_PROXY_HOPS <= 0) return direct;
+  const hops = String(req.headers["x-forwarded-for"] || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!proxyChecked) {
+    // Once per start-up: what the proxy sends, without anyone's address, so the setting can be checked.
+    proxyChecked = true;
+    const extra = ["true-client-ip", "cf-connecting-ip", "x-real-ip"].filter((h) => req.headers[h]);
+    console.log(
+      `Proxy check: X-Forwarded-For has ${hops.length} address(es); using number ${TRUST_PROXY_HOPS} from the end ` +
+        `(TRUST_PROXY_HOPS). Other address headers: ${extra.join(", ") || "none"}.`,
+    );
+  }
+  return hops.at(-TRUST_PROXY_HOPS) || direct;
+}
+
+// At most RATE_LIMIT messages per visitor every 10 minutes, and MAX_ACTIVE_PER_VISITOR replies
+// running at once.
+const WINDOW_MS = 10 * 60 * 1000;
+const recent = new Map(); // visitor -> times of their recent messages
+const active = new Map(); // visitor -> replies running now
+function underRateLimit(visitor) {
+  const now = Date.now();
+  const times = (recent.get(visitor) || []).filter((t) => now - t < WINDOW_MS);
+  recent.set(visitor, times);
+  return times.length < RATE_LIMIT;
+}
+// Forget visitors who have been quiet for a while, so the list doesn't grow forever.
+setInterval(() => {
+  const now = Date.now();
+  for (const [visitor, times] of recent) if (!times.some((t) => now - t < WINDOW_MS)) recent.delete(visitor);
+}, WINDOW_MS).unref();
+
+// Checks the request body and returns { messages, timeZone }, or throws a VisitorError.
+// Only the new message has a length limit: earlier ones (including long answers) are cut down
+// later anyway, and refusing them would break a long conversation for good.
+const MAX_CHARS = 20_000;
+function readChatRequest(raw) {
+  let body;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    throw new VisitorError("That message couldn't be read. Please reload the page and try again.");
+  }
+  const { messages, timeZone } = body || {};
+  if (!Array.isArray(messages) || messages.length === 0) {
+    throw new VisitorError("That conversation couldn't be read. Please start a new chat and try again.");
+  }
+  for (const m of messages) {
+    if (!m || typeof m !== "object" || !["user", "assistant"].includes(m.role) || typeof m.content !== "string") {
+      throw new VisitorError("That conversation couldn't be read. Please start a new chat and try again.");
+    }
+  }
+  const last = messages.at(-1);
+  if (last.role !== "user" || !last.content.trim()) throw new VisitorError("Please type a message first.");
+  if (last.content.length > MAX_CHARS) {
+    throw new VisitorError(`That message is too long. Please keep it under ${MAX_CHARS.toLocaleString("en-GB")} characters.`);
+  }
+  return { messages, timeZone: typeof timeZone === "string" ? timeZone.slice(0, 64) : undefined };
+}
+
+const replyJson = (res, status, body, headers = {}) => {
+  res.writeHead(status, { "Content-Type": "application/json", ...headers });
+  res.end(JSON.stringify(body));
+};
+
 // Streams one assistant turn back as server-sent events:
-//   text  -> {text}      a piece of the reply as it is written
-//   done  -> {content}   the full reply text to keep in the history
-//   error -> {message}
+//   text    -> {text}      a piece of the reply as it is written
+//   status  -> {text}      a note to show while waiting
+//   sources -> {...}       what a web search found
+//   done    -> {content}   the full reply text to keep in the history
+//   error   -> {message}
+// Lines starting with ":" are keep-alive pings and carry nothing.
 async function handleChat(req, res) {
   let messages, timeZone;
   try {
-    ({ messages, timeZone } = JSON.parse(await readBody(req)));
-    if (!Array.isArray(messages) || messages.length === 0) throw new Error("messages must be a non-empty array");
+    ({ messages, timeZone } = readChatRequest(await readBody(req)));
   } catch (err) {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: err.message }));
-    return;
+    return replyJson(res, 400, { error: err instanceof VisitorError ? err.message : "That message couldn't be read. Please try again." });
   }
 
-  if (!allowed(req)) {
-    res.writeHead(429, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "You're sending messages very quickly. Please wait a few minutes and try again." }));
-    return;
+  const visitor = visitorAddress(req);
+  if (ONLINE && budgetSpent()) return replyJson(res, 503, { error: RESTING }, { "Retry-After": "3600" });
+  if ((active.get(visitor) || 0) >= MAX_ACTIVE_PER_VISITOR) {
+    return replyJson(res, 429, { error: "Farhan AI is still answering your last message. Please wait for it to finish." });
   }
+  if (!underRateLimit(visitor)) {
+    return replyJson(res, 429, { error: "You're sending messages very quickly. Please wait a few minutes and try again." });
+  }
+  recent.get(visitor).push(Date.now());
+
+  // This visitor now has a reply running. Freed exactly once, when the reply ends or they leave.
+  active.set(visitor, (active.get(visitor) || 0) + 1);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    const left = (active.get(visitor) || 1) - 1;
+    if (left > 0) active.set(visitor, left);
+    else active.delete(visitor);
+  };
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
   });
-  const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  res.flushHeaders(); // the browser knows straight away that the message arrived
+  const send = (event, data) => !res.writableEnded && !res.destroyed && res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  const heartbeat = setInterval(() => !res.writableEnded && !res.destroyed && res.write(": ping\n\n"), HEARTBEAT_MS);
 
   const abort = new AbortController();
-  res.on("close", () => abort.abort());
+  res.on("close", () => {
+    abort.abort();
+    clearInterval(heartbeat);
+    release();
+  });
   const started = Date.now();
   const last = messages[messages.length - 1];
   // On your PC the black window shows what you typed; online, visitors' messages stay private.
@@ -543,8 +774,11 @@ async function handleChat(req, res) {
       console.log("The browser stopped waiting for this reply.");
     } else {
       console.log(`Error: ${err.message}`);
-      if (!res.writableEnded) send("error", { message: err.message });
+      send("error", { message: err instanceof VisitorError ? err.message : GENERAL_ERROR });
     }
+  } finally {
+    clearInterval(heartbeat);
+    release();
   }
   res.end();
 }

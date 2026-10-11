@@ -98,6 +98,13 @@ These environment variables override settings.json, for example in cmd: `set OLL
 | `GROQ_API_KEY` | (not set) | When set, replies come from Groq instead of Ollama (used by the online website) |
 | `GROQ_MODEL` | `onlineModel` from settings.json | Which Groq model answers online |
 | `RATE_LIMIT` | `30` | Messages each visitor can send per 10 minutes |
+| `MAX_ACTIVE_PER_VISITOR` | `1` | Replies one visitor can have running at the same time |
+| `DAILY_AI_CALLS` | `1000` | AI requests the whole website may make per day (resets at midnight UTC). `0` means no limit. When it runs out, visitors are asked to come back tomorrow. |
+| `TRUST_PROXY_HOPS` | `1` on Render, `0` elsewhere | How many proxies in front of the app add the visitor's address to `X-Forwarded-For`. Used to tell visitors apart for the limits above. |
+| `GROQ_FIRST_BYTE_TIMEOUT_MS` | `20000` | How long to wait for a Groq model to start answering before trying the next model |
+| `GROQ_IDLE_TIMEOUT_MS` | `30000` | Longest pause allowed in the middle of a reply before it is ended |
+| `SEARCH_TIMEOUT_MS` | `8000` | How long a web search may take before the answer carries on without it |
+| `HEARTBEAT_MS` | `15000` | How often a quiet reply sends a keep-alive ping so proxies don't close it |
 
 ## How it works
 
