@@ -136,22 +136,42 @@ function addMessage(role, text = "") {
   else bubble.innerHTML = renderMarkdown(text);
   row.appendChild(bubble);
   messagesEl.appendChild(row);
+  following = true;
   scrollToEnd();
   return bubble;
 }
 
-// Keeps the newest words in view while a reply streams, unless the visitor has scrolled up to
-// read something. Scrolls instantly: the page's smooth scrolling restarts on every frame and
-// would never catch up with a fast reply.
+// Keeps the newest words in view while a reply streams, unless the visitor scrolls up to read
+// something; scrolling back down to the end starts following again. This goes by what the
+// visitor does (wheel, touch, keys, scrollbar) rather than by position alone, because a fast
+// reply would otherwise pull the page back down in the middle of their scroll.
+let following = true;
+let leftAt = 0; // when the visitor last started scrolling away from the end
+const leave = () => {
+  following = false;
+  leftAt = Date.now();
+};
+const atEnd = () => messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
+messagesEl.addEventListener("wheel", (e) => e.deltaY < 0 && leave(), { passive: true });
+messagesEl.addEventListener("touchmove", leave, { passive: true });
+messagesEl.addEventListener("pointerdown", (e) => e.target === messagesEl && leave()); // the scrollbar
+window.addEventListener("keydown", (e) => {
+  if (e.target !== input && ["PageUp", "ArrowUp", "Home"].includes(e.key)) leave();
+});
+// Back at the end: follow again. Scroll events that were already on their way when the visitor
+// started scrolling away (from the page's own scrolling) are ignored.
+messagesEl.addEventListener("scroll", () => atEnd() && Date.now() - leftAt > 300 && (following = true), { passive: true });
+
+// Scrolls instantly: the page's smooth scrolling restarts on every frame and would never catch
+// up with a fast reply.
 function scrollToEnd() {
   messagesEl.style.scrollBehavior = "auto";
   messagesEl.scrollTop = messagesEl.scrollHeight;
   messagesEl.style.scrollBehavior = "";
 }
 function follow(update) {
-  const atEnd = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
   update();
-  if (atEnd) scrollToEnd();
+  if (following) scrollToEnd();
 }
 
 // While a reply is being written, the send button becomes a stop button.

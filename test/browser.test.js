@@ -39,6 +39,7 @@ beforeEach(async () => {
   };
   await page.goto(app.base);
   await page.waitFor("typeof send === 'function' && document.getElementById('input')");
+  await page.evaluate(`document.getElementById("splash")?.remove()`); // as if the visitor has gone past the intro
 });
 
 // Holds a reply open until the test calls released() (or the visitor stops it).
@@ -176,25 +177,38 @@ test("New chat while a reply is being written stops it and starts clean", async 
 });
 
 test("scrolling up to read isn't undone while a reply streams", async () => {
+  const pauses = new Set([25, 40]);
   handler = async (body, res) => {
     startStream(res);
     for (let i = 1; i <= 60; i++) {
       writeText(res, `Paragraph ${i} of a long answer that keeps going.\n\n`);
       await sleep(15);
-      if (i === 25) await new Promise((r) => (released = r));
+      if (pauses.has(i)) await new Promise((r) => (released = r));
     }
     endStream(res);
   };
+  const distanceFromEnd = () => page.evaluate(`messages.scrollHeight - messages.scrollTop - messages.clientHeight`);
   await type("Write a lot");
   await page.waitFor(`${LAST_REPLY}.includes("Paragraph 25")`);
-  await sleep(600); // the page scrolls smoothly, so give it time to settle
-  const following = await page.evaluate(`messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80`);
-  assert.ok(following, "it follows the reply while the visitor is at the bottom");
-  await page.evaluate(`messages.scrollTo({ top: 0, behavior: "instant" })`);
+  await sleep(100);
+  assert.ok((await distanceFromEnd()) < 80, "it follows the reply while the visitor is at the bottom");
+
+  // Something above grows without the visitor scrolling (a late font or welcome message).
+  await page.evaluate(`document.getElementById("intro").insertAdjacentHTML("beforeend", '<div style="height:400px"></div>')`);
   released();
+  await page.waitFor(`${LAST_REPLY}.includes("Paragraph 40")`);
+  await sleep(100);
+  assert.ok((await distanceFromEnd()) < 80, "it keeps following when the page above changes size");
+
+  // The visitor scrolls up with the mouse wheel, as the reply carries on.
+  const { x, y } = await page.evaluate(`(() => { const r = messages.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  released();
+  await page.send("Input.dispatchMouseEvent", { type: "mouseWheel", x, y, deltaX: 0, deltaY: -100000 });
   await page.waitFor(`!busy`, { timeout: 8000 });
   await sleep(800); // let any smooth scrolling finish
-  assert.ok((await page.evaluate(`messages.scrollTop`)) < 50, "the page stays where the visitor scrolled to");
+  // The wheel scrolled to the top; the reply must not have pulled the page back down to the end.
+  const { top, height } = await page.evaluate(`({ top: messages.scrollTop, height: messages.scrollHeight })`);
+  assert.ok(top < height / 5, `the page stays where the visitor scrolled to (at ${Math.round(top)} of ${height})`);
 });
 
 test("citation numbers become links only in plain text, never inside code, maths or links", async () => {
