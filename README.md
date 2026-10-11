@@ -85,6 +85,10 @@ To use your own song instead, name it `music.mp3` (or `music.m4a` / `music.ogg`)
 - **The black window closes or says `'node' is not recognized`**: install Node.js (step 1), restart your computer, and try again.
 - **Replies are slow**: that's your computer doing the work. A smaller model is faster: run `ollama pull llama3.2:1b`, then change `model` in settings.json to `llama3.2:1b`.
 
+## Measuring answer quality
+
+The `eval` folder has a set of 46 test questions with automatic checks (facts, maths, following instructions, long conversations, prompt injection, web search and more), and a script that asks a running Farhan AI each one and reports what passed. It shows whether a change to the AI's instructions or model made answers better or worse. See [eval/README.md](eval/README.md) for how to run it with your Groq key on your PC.
+
 ## Advanced settings (optional)
 
 These environment variables override settings.json, for example in cmd: `set OLLAMA_MODEL=llama3.2:1b` then `npm start`.
