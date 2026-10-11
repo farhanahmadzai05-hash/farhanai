@@ -34,8 +34,19 @@ function startFakeOllama(onRequest) {
   return new Promise((resolve) => server.listen(0, () => resolve(server)));
 }
 
+// A port nothing else is using. (Picking a random one from a small range sometimes gave two
+// servers the same port when tests ran side by side.)
+function freePort() {
+  return new Promise((resolve) => {
+    const probe = http.createServer().listen(0, "127.0.0.1", () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
+}
+
 async function startApp(t, env) {
-  const port = 3900 + Math.floor(Math.random() * 90);
+  const port = await freePort();
   const app = spawn(process.execPath, [serverPath], {
     env: { ...process.env, PORT: String(port), ...env },
     stdio: ["ignore", "pipe", "inherit"],
