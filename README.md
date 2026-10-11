@@ -25,6 +25,12 @@ If you prefer the terminal: click the folder's address bar, type `cmd`, press En
 
 To make Farhan AI a real website that works even when your PC is off, follow **[GO-LIVE.md](GO-LIVE.md)**. It uses Groq's free AI service and Render's free hosting.
 
+### Automatic checks before changes go live
+
+Every pull request, and every change to `main`, is tested automatically on GitHub (the **Checks** tab of a pull request, or the **Actions** tab of the repository). This runs `node scripts/check.js` and the full test suite on Linux and Windows. It's free for public repositories and uses no API keys.
+
+Render deploys every change to `main` straight away, even if the tests failed. To make Render wait for the tests, open the farhanai service in Render, go to **Settings**, find **Auto-Deploy**, and choose **After CI Checks Pass** (if your plan offers it). This is optional, and only you can change it.
+
 ## Share it from your PC (free)
 
 Double-click **`go-online.bat`**. The first time, it installs Cloudflare's free tunnel tool and asks you to run it again. After that, the black window shows a box like this:
@@ -72,11 +78,11 @@ Tap **Voice** at the top of the page, or swipe sideways, to switch from Chat to 
 
 ### Background music
 
-Background music is on by default, and the music note button at the top of the page turns it off and on. The page tries to start the music straight away, but most browsers block sound until a visitor clicks, taps or types, so it usually starts at their first click. If a visitor turns the music off, the page remembers that.
+Background music is off until a visitor turns it on with the music note button at the top of the page, and the music file isn't downloaded before then. The page remembers their choice: if they turned it on, it starts again on their next visit at their first click, tap or key press (browsers don't allow sound before that). If they turn it off, it stays off.
 
 The built-in music is composed live in the browser by `public/music.js`. It's original and contains no audio file, so there's nothing to license.
 
-To use your own song instead, name it `music.mp3` (or `music.m4a` / `music.ogg`) and put it in the `public` folder. On GitHub, open the `public` folder, click **Add file**, then **Upload files**, and commit. The website updates a few minutes later. Only use music you're allowed to share, such as your own or a track marked royalty free. To change the volume, edit `VOLUME` near the top of `public/music.js`.
+To use your own song instead, name it `music.mp3` (or `music.m4a` / `music.ogg`) and put it in the `public` folder. Keep it under 2 MB so it loads quickly on phones (a test checks this): 96 kbps MP3 is plenty for background music, and a free converter such as Audacity can save it at that quality. On GitHub, open the `public` folder, click **Add file**, then **Upload files**, and commit. The website updates a few minutes later. Only use music you're allowed to share, such as your own or a track marked royalty free. To change the volume, edit `VOLUME` near the top of `public/music.js`.
 
 ## If something goes wrong
 
