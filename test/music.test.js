@@ -31,6 +31,24 @@ before(async () => {
   app = await startApp(fake.url);
   browser = await launchBrowser();
   page = browser.page;
+  // Count audio players the page creates, and note when one actually starts playing.
+  await page.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      window.__audioCreated = 0;
+      window.__playing = false;
+      const RealAudio = window.Audio;
+      window.Audio = function (...args) {
+        window.__audioCreated++;
+        return new RealAudio(...args);
+      };
+      const realPlay = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function () {
+        const started = realPlay.call(this);
+        started.then(() => (window.__playing = true), () => {});
+        return started;
+      };
+    })()`,
+  });
 });
 
 after(async () => {
@@ -71,12 +89,14 @@ test("music is off for a new visitor, even after they click around the page", as
   await new Promise((r) => setTimeout(r, 500));
   assert.equal(await pressed(), "false");
   assert.equal(await musicDownloads(), 0, "the music file isn't downloaded");
+  assert.equal(await page.evaluate(`window.__audioCreated + (window.__playing ? 1 : 0)`), 0, "no music player is even created");
 });
 
 test("the music button turns music on, and that choice is remembered", async () => {
   await open(null);
   await click("#music");
   await page.waitFor(`document.getElementById("music").getAttribute("aria-pressed") === "true"`);
+  await page.waitFor(`window.__playing`, { timeout: 10_000, what: "the music to start playing" });
   assert.equal(await page.evaluate(`localStorage.getItem("farhanai-music")`), "on");
   await click("#music");
   await page.waitFor(`document.getElementById("music").getAttribute("aria-pressed") === "false"`);
@@ -88,9 +108,7 @@ test("a visitor who turned music on before gets it back at their first click", a
   assert.equal(await pressed(), "true", "the button shows it's on");
   await click("#input");
   await page.waitFor(`document.getElementById("music").getAttribute("aria-pressed") === "true"`);
-  await page.waitFor(`performance.getEntriesByType("resource").some((e) => /\\/music\\.mp3$/.test(e.name) && e.initiatorType !== "fetch")`, {
-    what: "the music to start loading",
-  });
+  await page.waitFor(`window.__playing`, { timeout: 10_000, what: "the music to start playing" });
 });
 
 test("a visitor who turned music off is never played music", async () => {
@@ -99,4 +117,5 @@ test("a visitor who turned music off is never played music", async () => {
   await new Promise((r) => setTimeout(r, 500));
   assert.equal(await pressed(), "false");
   assert.equal(await musicDownloads(), 0);
+  assert.equal(await page.evaluate(`window.__playing`), false);
 });
