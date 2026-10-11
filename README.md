@@ -102,6 +102,7 @@ These environment variables override settings.json, for example in cmd: `set OLL
 ## How it works
 
 - `server.js` serves the chat page and passes your conversation to Ollama's local API, streaming the reply back as it's written. It has no dependencies, so there's no `npm install` step.
-- `public/app.js` keeps the conversation in the browser, shows replies as they stream in, and supports "New chat".
+- `public/app.js` keeps the conversation in the browser, shows replies as they stream in, and supports "New chat". While a reply is being written, the send button becomes a **Stop** button. A reply that is stopped or cut off keeps the words that arrived and says so, and the newest one has a **Try again** button that asks again without sending your message twice. The conversation is kept only in that browser tab, so reloading the page starts a new chat.
 - Online, the same server talks to Groq's API instead (when `GROQ_API_KEY` is set). `render.yaml` describes the Render setup.
-- `npm test` checks the server against a fake Ollama and a fake Groq.
+- `npm test` checks the server against a fake Ollama and a fake Groq. It also opens the chat page in a hidden Chrome, Chromium or Edge window to test what a visitor sees (stopping, trying again, citations, scrolling). Those browser tests need Node 22 or newer and one of those browsers; without them they are skipped and the reason is shown. Set `CHROME_PATH` if your browser is somewhere unusual.
+- `npm run bench:streaming` measures how smoothly the page draws a long streamed reply on a slowed-down CPU. See [docs/notes/streaming-rendering.md](docs/notes/streaming-rendering.md).

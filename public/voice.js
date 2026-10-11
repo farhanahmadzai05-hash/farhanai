@@ -22,6 +22,7 @@
   let session = 0; // bumps whenever the conversation is stopped, so old callbacks are ignored
   let recognition = null;
   let talking = false; // keep listening again after each answer until the visitor stops
+  let asking = false; // a reply to something said in voice mode is being written
 
   function setState(next, message) {
     state = next;
@@ -147,6 +148,7 @@
   }
 
   function stopAll() {
+    if (asking) stopReply(); // stop the reply too, not just the voice
     session++;
     talking = false;
     try {
@@ -272,6 +274,7 @@
     const voiceOut = speaker(id);
     let shown = "";
     let error = null;
+    asking = true;
     const reply = await send(text, {
       onText(chunk) {
         if (id !== session) return;
@@ -287,6 +290,7 @@
         error = message;
       },
     });
+    asking = false;
     if (id !== session) return;
     if (reply == null) {
       talking = false;

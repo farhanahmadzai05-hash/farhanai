@@ -8,6 +8,7 @@
   "engines": { "node": ">=18" },
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "bench:streaming": "node scripts/bench-streaming.js"
   }
 }

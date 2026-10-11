@@ -10,10 +10,14 @@ const bannerEl = document.getElementById("banner");
 // Give up on a reply that hasn't started after this long.
 const FIRST_WORDS_TIMEOUT_MS = 3 * 60 * 1000;
 
-// Full conversation, sent to the server with every message.
+// The conversation so far, sent to the server with every message. A message only joins it once
+// it has an answer (or part of one), so trying a failed message again never sends it twice.
 let history = [];
 let busy = false;
 let onlineSite = false; // true on the public website, false on your PC
+let current = null; // the reply being written: { controller, stopped }
+let lastTurn = null; // the newest message and its reply, which can be tried again
+let chatNumber = 0; // goes up with every New chat, so a stopped reply can't add to the next chat
 
 fetch("/api/config")
   .then((r) => r.json())
@@ -132,13 +136,37 @@ function addMessage(role, text = "") {
   else bubble.innerHTML = renderMarkdown(text);
   row.appendChild(bubble);
   messagesEl.appendChild(row);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  scrollToEnd();
   return bubble;
 }
 
+// Keeps the newest words in view while a reply streams, unless the visitor has scrolled up to
+// read something. Scrolls instantly: the page's smooth scrolling restarts on every frame and
+// would never catch up with a fast reply.
+function scrollToEnd() {
+  messagesEl.style.scrollBehavior = "auto";
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  messagesEl.style.scrollBehavior = "";
+}
+function follow(update) {
+  const atEnd = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
+  update();
+  if (atEnd) scrollToEnd();
+}
+
+// While a reply is being written, the send button becomes a stop button.
 function setBusy(value) {
   busy = value;
-  sendBtn.disabled = value;
+  sendBtn.classList.toggle("stop", value);
+  sendBtn.title = value ? "Stop" : "Send";
+  sendBtn.setAttribute("aria-label", value ? "Stop the reply" : "Send");
+  messagesEl.querySelectorAll(".retry").forEach((b) => (b.disabled = value));
+}
+
+function stopReply() {
+  if (!current) return;
+  current.stopped = true;
+  current.controller.abort();
 }
 
 // Pictures and links from the AI's web searches, shown above its answer.
@@ -216,19 +244,127 @@ function showSources(container, data) {
   }
 }
 
-// Turns the AI's [1] style citations into links to those sources.
-function linkCitations(html, links) {
-  return html.replace(/【[^】]*】/g, "").replace(/\[(\d{1,2})\]/g, (m, n) =>
-    links[n] ? `<a class="cite" href="${escapeHtml(links[n])}" target="_blank" rel="noopener noreferrer">${n}</a>` : m,
-  );
+// Turns the AI's [1] style citations in `root` into links to those sources. Only plain text is
+// changed: code, maths and links are left alone, so `items[1]` in code stays exactly as written.
+function linkCitations(root, links) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (node) => (node.parentElement?.closest("pre, code, a, .katex") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+  });
+  const textNodes = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+  for (const node of textNodes) {
+    const text = node.nodeValue.replace(/【[^】]*】/g, ""); // the model's own source markers
+    const parts = [];
+    let from = 0;
+    for (const m of text.matchAll(/\[(\d{1,2})\]/g)) {
+      if (!links[m[1]]) continue;
+      const link = document.createElement("a");
+      link.className = "cite";
+      link.href = links[m[1]];
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = m[1];
+      parts.push(text.slice(from, m.index), link);
+      from = m.index + m[0].length;
+    }
+    if (parts.length) node.replaceWith(...parts, text.slice(from));
+    else if (text !== node.nodeValue) node.nodeValue = text;
+  }
 }
 
+// Where the finished part of a streaming reply ends: the start of the newest line that follows a
+// blank line, sits outside code blocks and maths, and doesn't start with a space (an indented line
+// may still belong to the list or code above it). Everything before it is complete and won't
+// change as more words arrive. `from` must itself be such a place (or 0).
+function finishedUpTo(text, from) {
+  let cut = from;
+  let fence = ""; // the ``` or ~~~ that opened the code block we're in
+  let displayMath = false; // inside $$ … $$
+  let brackets = 0; // inside \[ … \] or \( … \)
+  let afterBlank = false;
+  let pos = from;
+  for (let end; (end = text.indexOf("\n", pos)) !== -1; pos = end + 1) {
+    const line = text.slice(pos, end);
+    if (afterBlank && !fence && !displayMath && !brackets && /^\S/.test(line)) cut = pos;
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (marker && !fence) fence = marker;
+    else if (marker && marker[0] === fence[0] && marker.length >= fence.length && !line.trim().slice(marker.length)) fence = "";
+    else if (!fence) {
+      const plain = line.replace(/`[^`]*`/g, "");
+      for (const m of plain.matchAll(/\$\$|\\[[(]|\\[\])]/g)) {
+        if (m[0] === "$$") displayMath = !displayMath;
+        else if (m[0][1] === "[" || m[0][1] === "(") brackets++;
+        else brackets = Math.max(0, brackets - 1);
+      }
+    }
+    afterBlank = !line.trim();
+  }
+  return cut;
+}
+
+// Draws a reply into `el` while it streams. Finished blocks (paragraphs, lists, code…) are drawn
+// once and kept; each update only redraws the unfinished last block. Redrawing the whole reply on
+// every update made long answers freeze the page. finish() draws the reply once more in full, so
+// the end result is exactly what drawing it all at once gives.
+function streamRenderer(el, links) {
+  let kept = 0; // characters already drawn as finished blocks
+  let tail = []; // the nodes of the unfinished block
+  const draw = (markdown) => {
+    const t = document.createElement("template");
+    t.innerHTML = renderMarkdown(markdown);
+    linkCitations(t.content, links);
+    const nodes = [...t.content.childNodes];
+    el.append(t.content);
+    return nodes;
+  };
+  return {
+    update(text) {
+      for (const node of tail) node.remove();
+      const cut = finishedUpTo(text, kept);
+      if (cut > kept) {
+        draw(text.slice(kept, cut));
+        kept = cut;
+      }
+      tail = draw(text.slice(kept));
+    },
+    finish(text) {
+      el.replaceChildren();
+      draw(text);
+      tail = [];
+      kept = text.length;
+    },
+  };
+}
+
+// Why a reply failed, in words for the visitor.
+function failureMessage(err) {
+  if (err.name === "AbortError") {
+    return onlineSite
+      ? "the AI didn't answer in time. Please try again."
+      : "the AI model didn't answer within 3 minutes. Check the black chatbot window for a message, and make sure the Ollama app is running.";
+  }
+  if (err instanceof TypeError) {
+    return onlineSite
+      ? "lost connection to the website. Check your internet and try again."
+      : "can't reach the chatbot server. Double-click start-chatbot.bat and keep its black window open.";
+  }
+  return err.message;
+}
+
+// Sends a message and shows the reply as it streams in.
 // hooks (used by voice mode): onText(chunk) for each piece of the reply, onStatus(message), onError(message).
-// Returns the full reply, or null if something went wrong.
+// Returns the full reply, or null if it was stopped or something went wrong.
 async function send(text, hooks = {}) {
-  history.push({ role: "user", content: text });
-  addMessage("user", text);
+  if (busy) return null;
+  const userRow = addMessage("user", text).parentElement;
+  return answer(text, userRow, hooks);
+}
+
+// Gets and shows the reply to `text`, whose bubble is already on the page.
+async function answer(text, userRow, hooks = {}) {
+  lastTurn?.replyRow.querySelector(".turn-actions")?.remove(); // only the newest message can be tried again
   const replyEl = addMessage("assistant");
+  const turn = (lastTurn = { text, userRow, replyRow: replyEl.parentElement, saved: false, chat: chatNumber });
   const sourcesEl = document.createElement("div");
   sourcesEl.className = "sources";
   sourcesEl.hidden = true;
@@ -236,6 +372,7 @@ async function send(text, hooks = {}) {
   replyEl.append(sourcesEl, answerEl);
   const links = {};
   let statusText = "";
+  const reply = (current = { controller: new AbortController(), stopped: false });
   setBusy(true);
 
   // While waiting for the first words, show how long it's been.
@@ -250,35 +387,44 @@ async function send(text, hooks = {}) {
   };
   showWaiting();
   const waitingTimer = setInterval(showWaiting, 1000);
-  const controller = new AbortController();
-  const giveUp = setTimeout(() => controller.abort(), FIRST_WORDS_TIMEOUT_MS);
+  const giveUp = setTimeout(() => reply.controller.abort(), FIRST_WORDS_TIMEOUT_MS);
   const stopWaiting = () => {
     clearInterval(waitingTimer);
     clearTimeout(giveUp);
   };
 
+  // Keeps this message and its reply in the conversation (unless a new chat has started since).
+  const save = (content) => {
+    if (turn.chat !== chatNumber) return;
+    history.push({ role: "user", content: text }, { role: "assistant", content });
+    turn.saved = true;
+  };
+
   let replyText = "";
   let finished = false;
+  let ended = false;
   let renderQueued = false;
+  const renderer = streamRenderer(answerEl, links);
   const renderAnswer = () => {
     renderQueued = false;
-    if (!replyText) return;
-    answerEl.innerHTML = linkCitations(renderMarkdown(replyText), links);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    if (replyText && !ended) follow(() => renderer.update(replyText));
   };
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: history, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
-      signal: controller.signal,
+      body: JSON.stringify({
+        messages: [...history, { role: "user", content: text }],
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      }),
+      signal: reply.controller.signal,
     });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `Server error ${res.status}`);
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    while (true) {
+    while (!finished) {
       const { value, done } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
@@ -287,9 +433,17 @@ async function send(text, hooks = {}) {
         const raw = buffer.slice(0, sep);
         buffer = buffer.slice(sep + 2);
         const event = /^event: (.*)$/m.exec(raw)?.[1];
-        const data = JSON.parse(/^data: (.*)$/m.exec(raw)?.[1] || "{}");
+        let data;
+        try {
+          data = JSON.parse(/^data: (.*)$/m.exec(raw)?.[1] || "{}");
+        } catch {
+          continue; // a garbled event: skip it rather than lose the whole reply
+        }
         if (event === "text") {
-          stopWaiting();
+          if (!replyText) {
+            stopWaiting();
+            answerEl.replaceChildren();
+          }
           replyText += data.text;
           hooks.onText?.(data.text);
           if (!renderQueued) {
@@ -302,49 +456,93 @@ async function send(text, hooks = {}) {
           if (!replyText) showWaiting();
         } else if (event === "sources") {
           for (const r of data.results || []) if (safeUrl(r.url)) links[r.n] = safeUrl(r.url);
-          showSources(sourcesEl, data);
-          messagesEl.scrollTop = messagesEl.scrollHeight;
+          follow(() => showSources(sourcesEl, data));
         } else if (event === "done") {
-          renderAnswer();
-          history.push({ role: "assistant", content: data.content });
+          ended = finished = true;
+          follow(() => renderer.finish(replyText));
           if (!replyText) answerEl.textContent = "(The model sent back an empty reply. Try asking again.)";
-          finished = true;
+          save(data.content);
+          break;
         } else if (event === "error") {
           throw new Error(data.message);
         }
       }
     }
     if (!finished) throw new Error("The connection closed before the reply finished. Is the black chatbot window still open?");
+    reader.cancel().catch(() => {});
   } catch (err) {
-    history.pop(); // drop the unanswered user turn so the conversation stays valid
-    replyEl.classList.add("error");
-    replyEl.textContent =
-      err.name === "AbortError"
-        ? onlineSite
-          ? "Error: the AI didn't answer in time. Please try again."
-          : "Error: the AI model didn't answer within 3 minutes. Check the black chatbot window for a message, and make sure the Ollama app is running."
-        : err instanceof TypeError
-          ? onlineSite
-            ? "Error: lost connection to the website. Check your internet and try again."
-            : "Error: can't reach the chatbot server. Double-click start-chatbot.bat and keep its black window open."
-          : `Error: ${err.message}`;
-    checkStatus();
-    hooks.onError?.(replyEl.textContent.replace(/^Error: /, ""));
+    ended = true;
+    stopWaiting();
+    const message = reply.stopped ? null : failureMessage(err);
+    follow(() => {
+      if (replyText) {
+        // Keep the words that already arrived, and say the reply isn't complete.
+        renderer.finish(replyText);
+        save(replyText);
+        addNote(replyEl, reply.stopped ? "Stopped" : `Interrupted: ${message}`, !reply.stopped);
+      } else if (reply.stopped) {
+        answerEl.replaceChildren();
+        addNote(replyEl, "Stopped before it answered");
+      } else {
+        replyEl.classList.add("error");
+        replyEl.textContent = `Error: ${message}`;
+      }
+      if (turn.chat === chatNumber) addRetry(turn);
+    });
+    if (!reply.stopped) {
+      checkStatus();
+      hooks.onError?.(message);
+    }
   } finally {
     stopWaiting();
+    if (current === reply) current = null;
     setBusy(false);
     if (!hooks.onText) input.focus();
   }
   return finished ? replyText : null;
 }
 
+// A short line under a reply that was stopped or cut off.
+function addNote(bubble, text, problem = false) {
+  const note = document.createElement("div");
+  note.className = problem ? "turn-note problem" : "turn-note";
+  note.textContent = text;
+  bubble.appendChild(note);
+}
+
+// A "Try again" button under the newest reply when it didn't finish. It asks again in place:
+// the message isn't added a second time, and the unfinished reply is replaced.
+function addRetry(turn) {
+  const actions = document.createElement("div");
+  actions.className = "turn-actions";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "retry";
+  button.textContent = "Try again";
+  button.addEventListener("click", () => {
+    if (busy || turn !== lastTurn) return;
+    if (turn.saved) history.splice(-2, 2);
+    turn.replyRow.remove();
+    answer(turn.text, turn.userRow);
+  });
+  actions.appendChild(button);
+  turn.replyRow.querySelector(".bubble").appendChild(actions);
+}
+
 form.addEventListener("submit", (e) => {
   e.preventDefault();
   const text = input.value.trim();
-  if (!text || busy) return;
+  if (!text || busy) return; // while a reply is being written, keep what's typed for later
   input.value = "";
   input.style.height = "";
   send(text);
+});
+
+// While a reply is being written, the send button stops it instead.
+sendBtn.addEventListener("click", (e) => {
+  if (!busy) return;
+  e.preventDefault();
+  stopReply();
 });
 
 input.addEventListener("keydown", (e) => {
@@ -360,9 +558,11 @@ input.addEventListener("input", () => {
 });
 
 newChatBtn.addEventListener("click", () => {
-  if (busy) return;
+  stopReply();
+  chatNumber++;
   window.dispatchEvent(new Event("farhanai-new-chat"));
   history = [];
+  lastTurn = null;
   messagesEl.querySelectorAll(":scope > .row").forEach((m) => m.remove());
   chipsEl.hidden = false;
   input.focus();
