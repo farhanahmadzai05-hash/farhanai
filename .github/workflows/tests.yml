@@ -1,0 +1,45 @@
+# Runs the checks and the full test suite on every pull request and every push to main, on
+# Linux and Windows. Free for public repositories. Nothing here deploys anything or uses any
+# secrets: the tests use fake AI services.
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: 20
+          - os: ubuntu-latest
+            node: 22
+          - os: windows-latest
+            node: 22
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # Ubuntu 24.04 stops Chrome's sandbox from starting unless this is relaxed.
+      - name: Let headless Chrome start
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Check files
+        run: node scripts/check.js
+      - name: Run tests
+        run: node --test
