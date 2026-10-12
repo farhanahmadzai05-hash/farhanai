@@ -1,11 +1,11 @@
 // Chat page: keeps the conversation, sends it to /api/chat, and renders the streamed reply.
 const messagesEl = document.getElementById("messages");
-const chipsEl = document.getElementById("chips");
 const form = document.getElementById("composer");
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
 const newChatBtn = document.getElementById("new-chat");
 const bannerEl = document.getElementById("banner");
+const counterEl = document.getElementById("counter");
 
 // Give up on a reply that hasn't started after this long.
 const FIRST_WORDS_TIMEOUT_MS = 3 * 60 * 1000;
@@ -18,12 +18,21 @@ let onlineSite = false; // true on the public website, false on your PC
 let current = null; // the reply being written: { controller, stopped }
 let lastTurn = null; // the newest message and its reply, which can be tried again
 let chatNumber = 0; // goes up with every New chat, so a stopped reply can't add to the next chat
+// What's on screen, saved in this browser by chats.js: { user, reply, sources, note } for each
+// message that got an answer (or part of one). chatId is null until the first answer is saved.
+let turns = [];
+let chatId = null;
+const MAX_CHARS = 20_000; // the longest message the server accepts
 
 fetch("/api/config")
   .then((r) => r.json())
   .then((c) => {
     document.title = c.appName;
-    document.getElementById("app-name").textContent = c.appName;
+    // "Farhan AI" is shown as a wordmark with "AI" set apart.
+    const name = document.getElementById("app-name");
+    const [, first, ai] = /^(.*?)\s*(AI)?$/.exec(c.appName);
+    name.textContent = first || c.appName;
+    if (ai) name.insertAdjacentHTML("beforeend", "<span>AI</span>");
     document.getElementById("welcome").innerHTML = renderMarkdown(c.welcome);
     if (c.creatorMessage) {
       document.getElementById("creator-message").innerHTML = renderMarkdown(c.creatorMessage);
@@ -31,7 +40,7 @@ fetch("/api/config")
     }
     document.getElementById("model").textContent = c.online ? "online" : `${c.model} · on your PC`;
     onlineSite = c.online;
-    input.placeholder = `Message ${c.appName}…`;
+    input.placeholder = `Ask ${c.appName} anything…`;
   })
   .catch(() => {});
 
@@ -66,6 +75,10 @@ function renderMath(tex, display) {
     return escapeHtml(tex);
   }
 }
+
+// Code blocks get a language label, colours and a Copy button (code.js).
+let plainCode = false; // true while drawing the unfinished end of a streaming reply
+if (window.marked && window.renderCodeBlock) marked.use({ renderer: { code: ({ text, lang }) => renderCodeBlock(text, lang, { plain: plainCode }) } });
 
 function renderMarkdown(text) {
   if (!window.marked || !window.DOMPurify) return renderBasic(text);
@@ -118,17 +131,17 @@ function renderBasic(text) {
   return html;
 }
 
-// Adds a chat bubble and returns it. Assistant bubbles get the app's logo beside them.
+// The home screen (greeting and suggestions) shows only while the chat is empty.
+function updateHome() {
+  document.body.classList.toggle("chatting", !!messagesEl.querySelector(":scope > .row"));
+}
+
+// Adds a chat bubble and returns it. Assistant bubbles get the Farhan AI mark beside them.
 function addMessage(role, text = "") {
-  chipsEl.hidden = true;
   const row = document.createElement("div");
   row.className = `row ${role}`;
   if (role === "assistant") {
-    const avatar = document.createElement("img");
-    avatar.src = "/icon.svg";
-    avatar.alt = "";
-    avatar.className = "avatar";
-    row.appendChild(avatar);
+    row.insertAdjacentHTML("afterbegin", '<svg class="avatar" aria-hidden="true"><use href="#mark"/></svg>');
   }
   const bubble = document.createElement("div");
   bubble.className = "bubble";
@@ -136,6 +149,7 @@ function addMessage(role, text = "") {
   else bubble.innerHTML = renderMarkdown(text);
   row.appendChild(bubble);
   messagesEl.appendChild(row);
+  updateHome();
   following = true;
   scrollToEnd();
   return bubble;
@@ -181,6 +195,7 @@ function setBusy(value) {
   sendBtn.title = value ? "Stop" : "Send";
   sendBtn.setAttribute("aria-label", value ? "Stop the reply" : "Send");
   messagesEl.querySelectorAll(".retry").forEach((b) => (b.disabled = value));
+  document.body.classList.toggle("busy", value);
 }
 
 function stopReply() {
@@ -329,9 +344,14 @@ function finishedUpTo(text, from) {
 function streamRenderer(el, links) {
   let kept = 0; // characters already drawn as finished blocks
   let tail = []; // the nodes of the unfinished block
-  const draw = (markdown) => {
+  const draw = (markdown, unfinished = false) => {
     const t = document.createElement("template");
-    t.innerHTML = renderMarkdown(markdown);
+    plainCode = unfinished;
+    try {
+      t.innerHTML = renderMarkdown(markdown);
+    } finally {
+      plainCode = false;
+    }
     linkCitations(t.content, links);
     const nodes = [...t.content.childNodes];
     el.append(t.content);
@@ -345,7 +365,7 @@ function streamRenderer(el, links) {
         draw(text.slice(kept, cut));
         kept = cut;
       }
-      tail = draw(text.slice(kept));
+      tail = draw(text.slice(kept), true);
     },
     finish(text) {
       el.replaceChildren();
@@ -384,7 +404,8 @@ async function send(text, hooks = {}) {
 async function answer(text, userRow, hooks = {}) {
   lastTurn?.replyRow.querySelector(".turn-actions")?.remove(); // only the newest message can be tried again
   const replyEl = addMessage("assistant");
-  const turn = (lastTurn = { text, userRow, replyRow: replyEl.parentElement, saved: false, chat: chatNumber });
+  const turn = (lastTurn = { text, userRow, replyRow: replyEl.parentElement, saved: false, chat: chatNumber, sources: [] });
+  replyEl.parentElement.classList.add("streaming");
   const sourcesEl = document.createElement("div");
   sourcesEl.className = "sources";
   sourcesEl.hidden = true;
@@ -418,6 +439,9 @@ async function answer(text, userRow, hooks = {}) {
     if (turn.chat !== chatNumber) return;
     history.push({ role: "user", content: text }, { role: "assistant", content });
     turn.saved = true;
+    turn.record = { user: text, reply: content, sources: turn.sources, note: "" };
+    turns.push(turn.record);
+    persist();
   };
 
   let replyText = "";
@@ -476,6 +500,7 @@ async function answer(text, userRow, hooks = {}) {
           if (!replyText) showWaiting();
         } else if (event === "sources") {
           for (const r of data.results || []) if (safeUrl(r.url)) links[r.n] = safeUrl(r.url);
+          turn.sources.push(data);
           follow(() => showSources(sourcesEl, data));
         } else if (event === "done") {
           ended = finished = true;
@@ -499,7 +524,12 @@ async function answer(text, userRow, hooks = {}) {
         // Keep the words that already arrived, and say the reply isn't complete.
         renderer.finish(replyText);
         save(replyText);
-        addNote(replyEl, reply.stopped ? "Stopped" : `Interrupted: ${message}`, !reply.stopped);
+        const note = reply.stopped ? "Stopped" : `Interrupted: ${message}`;
+        addNote(replyEl, note, !reply.stopped);
+        if (turn.record) {
+          turn.record.note = note;
+          persist();
+        }
       } else if (reply.stopped) {
         answerEl.replaceChildren();
         addNote(replyEl, "Stopped before it answered");
@@ -515,6 +545,7 @@ async function answer(text, userRow, hooks = {}) {
     }
   } finally {
     stopWaiting();
+    turn.replyRow.classList.remove("streaming");
     if (current === reply) current = null;
     setBusy(false);
     if (!hooks.onText) input.focus();
@@ -541,7 +572,11 @@ function addRetry(turn) {
   button.textContent = "Try again";
   button.addEventListener("click", () => {
     if (busy || turn !== lastTurn) return;
-    if (turn.saved) history.splice(-2, 2);
+    if (turn.saved) {
+      history.splice(-2, 2);
+      turns.pop();
+      persist();
+    }
     turn.replyRow.remove();
     answer(turn.text, turn.userRow);
   });
@@ -553,8 +588,12 @@ form.addEventListener("submit", (e) => {
   e.preventDefault();
   const text = input.value.trim();
   if (!text || busy) return; // while a reply is being written, keep what's typed for later
+  if (text.length > MAX_CHARS) {
+    window.FarhanUI?.toast(`That message is too long. Please keep it under ${MAX_CHARS.toLocaleString("en-GB")} characters.`, { kind: "error" });
+    return;
+  }
   input.value = "";
-  input.style.height = "";
+  composerChanged();
   send(text);
 });
 
@@ -565,32 +604,112 @@ sendBtn.addEventListener("click", (e) => {
   stopReply();
 });
 
+// Enter sends and Shift+Enter starts a new line. On phones and tablets Enter starts a new line
+// (their keyboards have no Shift), and the send button sends. Enter that finishes typing a
+// word in an input method (Chinese, Japanese…) is left alone.
+const touchKeyboard = window.matchMedia("(pointer: coarse)");
 input.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !touchKeyboard.matches) {
     e.preventDefault();
     form.requestSubmit();
   }
 });
 
-input.addEventListener("input", () => {
+// The box grows with what's typed (up to a limit), the length shows only when it's getting
+// close to the limit, and an unsent message is kept if the page is closed or reloaded.
+const DRAFT_KEY = "farhanai-draft";
+let draftTimer;
+function composerChanged() {
   input.style.height = "auto";
-  input.style.height = `${input.scrollHeight}px`;
-});
+  input.style.height = `${Math.min(input.scrollHeight, Math.round(innerHeight * 0.4))}px`;
+  const n = input.value.length;
+  counterEl.hidden = n < MAX_CHARS * 0.75;
+  counterEl.textContent = `${n.toLocaleString("en-GB")} / ${MAX_CHARS.toLocaleString("en-GB")}`;
+  counterEl.classList.toggle("over", n > MAX_CHARS);
+  form.classList.toggle("has-text", !!input.value.trim());
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => {
+    try {
+      if (input.value.trim()) localStorage.setItem(DRAFT_KEY, input.value);
+      else localStorage.removeItem(DRAFT_KEY);
+    } catch {}
+  }, 300);
+}
+input.addEventListener("input", composerChanged);
+try {
+  const draft = localStorage.getItem(DRAFT_KEY);
+  if (draft && !input.value) {
+    input.value = draft;
+    composerChanged();
+  }
+} catch {}
 
-newChatBtn.addEventListener("click", () => {
+document.getElementById("talk")?.addEventListener("click", () => window.FarhanPanels?.goTo(1));
+
+// Saves the current chat in this browser (see chats.js).
+function persist() {
+  if (!window.FarhanChats || (!turns.length && !chatId)) return;
+  const id = window.FarhanChats.save(chatId, turns);
+  if (id && id !== chatId) {
+    chatId = id;
+    window.dispatchEvent(new CustomEvent("farhanai-active-chat", { detail: chatId }));
+  }
+}
+
+// Empties the chat on screen and starts afresh. A reply being written is stopped first.
+function clearChat() {
   stopReply();
   chatNumber++;
   window.dispatchEvent(new Event("farhanai-new-chat"));
   history = [];
+  turns = [];
+  chatId = null;
   lastTurn = null;
   messagesEl.querySelectorAll(":scope > .row").forEach((m) => m.remove());
-  chipsEl.hidden = false;
+  updateHome();
+  window.dispatchEvent(new CustomEvent("farhanai-active-chat", { detail: null }));
+}
+
+function startNewChat() {
+  clearChat();
+  window.FarhanPanels?.goTo(0);
   input.focus();
+}
+newChatBtn.addEventListener("click", startNewChat);
+document.getElementById("side-new")?.addEventListener("click", () => {
+  startNewChat();
+  if (window.matchMedia("(max-width: 860px)").matches) window.FarhanSidebar?.setDrawer(false);
 });
 
-// Suggestion buttons on the welcome screen send their text as a message.
-document.querySelectorAll(".chip").forEach((chip) =>
-  chip.addEventListener("click", () => {
-    if (!busy) send(chip.textContent);
-  }),
-);
+// Opens a saved chat: shows its messages and carries on the conversation from there.
+function openChat(id) {
+  const chat = window.FarhanChats?.get(id);
+  if (!chat) return false;
+  clearChat();
+  chatId = id;
+  for (const t of chat.turns) {
+    addMessage("user", t.user);
+    const bubble = addMessage("assistant");
+    const links = {};
+    if (t.sources.length) {
+      const sourcesEl = document.createElement("div");
+      sourcesEl.className = "sources";
+      for (const data of t.sources) {
+        for (const r of data.results || []) if (safeUrl(r.url)) links[r.n] = safeUrl(r.url);
+        showSources(sourcesEl, data);
+      }
+      bubble.appendChild(sourcesEl);
+    }
+    const answerEl = document.createElement("div");
+    bubble.appendChild(answerEl);
+    streamRenderer(answerEl, links).finish(t.reply);
+    if (t.note) addNote(bubble, t.note, t.note !== "Stopped");
+    history.push({ role: "user", content: t.user }, { role: "assistant", content: t.reply });
+    turns.push(t);
+  }
+  following = true;
+  scrollToEnd();
+  window.dispatchEvent(new CustomEvent("farhanai-active-chat", { detail: chatId }));
+  window.FarhanPanels?.goTo(0);
+  return true;
+}

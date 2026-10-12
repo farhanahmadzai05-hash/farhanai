@@ -193,8 +193,8 @@ test("scrolling up to read isn't undone while a reply streams", async () => {
   await sleep(100);
   assert.ok((await distanceFromEnd()) < 80, "it follows the reply while the visitor is at the bottom");
 
-  // Something above grows without the visitor scrolling (a late font or welcome message).
-  await page.evaluate(`document.getElementById("intro").insertAdjacentHTML("beforeend", '<div style="height:400px"></div>')`);
+  // Something above grows without the visitor scrolling (a late font or picture).
+  await page.evaluate(`messages.querySelector(":scope > .row").insertAdjacentHTML("beforebegin", '<div style="height:400px;flex:none"></div>')`);
   released();
   await page.waitFor(`${LAST_REPLY}.includes("Paragraph 40")`);
   await sleep(100);

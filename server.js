@@ -110,6 +110,11 @@ const STATIC_FILES = {
   "/panels.js": ["panels.js", "text/javascript; charset=utf-8"],
   "/voice.js": ["voice.js", "text/javascript; charset=utf-8"],
   "/bugfixes.js": ["bugfixes.js", "text/javascript; charset=utf-8"],
+  "/theme.js": ["theme.js", "text/javascript; charset=utf-8"],
+  "/code.js": ["code.js", "text/javascript; charset=utf-8"],
+  "/ui.js": ["ui.js", "text/javascript; charset=utf-8"],
+  "/chats.js": ["chats.js", "text/javascript; charset=utf-8"],
+  "/home.js": ["home.js", "text/javascript; charset=utf-8"],
   // Optional: drop your own song into the public folder with one of these names.
   "/music.mp3": ["music.mp3", "audio/mpeg"],
   "/music.m4a": ["music.m4a", "audio/mp4"],
