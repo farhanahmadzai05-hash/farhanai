@@ -86,7 +86,7 @@ async function key(keyName, modifiers = 0) {
 // The system prompt the fake AI received last.
 const lastSystem = () => fake.requests.at(-1).messages.find((m) => m.role === "system").content;
 const lastSent = () => fake.requests.at(-1).messages.filter((m) => m.role !== "system").map((m) => m.content);
-const menuItem = (label) => js(`(() => { const b = [...document.querySelectorAll('.menu [role="menuitem"]')].find((b) => b.textContent.trim().startsWith(${JSON.stringify(label)})); b.id = "menu-pick"; return true; })()`);
+const menuItem = (label) => js(`(() => { const b = [...document.querySelectorAll('.menu button')].find((b) => b.textContent.trim().startsWith(${JSON.stringify(label)})); b.id = "menu-pick"; return true; })()`);
 
 
 const lastUser = () => fake.requests.at(-1).messages.at(-1).content;
@@ -108,12 +108,13 @@ const PICTURE = `(async () => { const c = document.createElement("canvas"); c.wi
 test("the model picker lists only the models the server can use, and the pick is asked first", async () => {
   await page.waitFor(`!document.getElementById("model-chip").hidden`);
   await click("#model-chip");
-  const items = await js(`[...document.querySelectorAll('.menu [role="menuitem"]')].map((b) => b.textContent.trim())`);
+  const items = await js(`[...document.querySelectorAll('.menu button')].map((b) => b.textContent.trim())`);
   assert.deepEqual(
     items.map((t) => t.split(" · ")[0].replace(" ✓", "")),
     ["Auto (GPT-OSS 120B)", "GPT-OSS 120B", "Qwen 3.8 27B", "Llama 3.1 8B"],
     "speech models and models the account doesn't list are left out",
   );
+  assert.equal(await js(`document.querySelector('.menu button[aria-checked="true"]').textContent.trim()`), "Auto (GPT-OSS 120B)", "the current choice is marked for screen readers");
   await menuItem("Llama 3.1 8B");
   await click("#menu-pick");
   assert.match(await js(`document.getElementById("model-chip").textContent`), /Llama 3.1 8B/);

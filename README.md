@@ -92,6 +92,16 @@ Web search only works on the website (with Groq), not in the PC version with Oll
 
 Tap **Voice** at the top of the page, or swipe sideways, to switch from Chat to Voice. Tap the glowing orb and talk: Farhan AI listens, answers out loud, then listens again until you tap the orb to stop. Voice chats also show up in Chat. It uses the speech features built into the browser, so it's free; it works in Chrome, Edge and Safari (not Firefox), and the browser asks for permission to use the mic the first time.
 
+- **Read aloud**: the speaker button under each reply reads it out (maths is read as words, code is skipped); press it again to stop. This works in any browser that can speak, including Firefox, where voice mode itself can't listen.
+- **Settings > Voice** picks the voice (from the ones the device provides) and the speed, for both voice mode and Read aloud.
+
+### Accessibility
+
+- Screen readers hear each reply once, when it's finished (and any error), instead of every piece as it streams in. The conversation is marked busy while a reply is being written.
+- Every control has a name and is at least 24 by 24 pixels. Menus mark the current choice (style, mode, model) so screen readers say "checked". Everything works from the keyboard (see the shortcuts).
+- Settings > Appearance has text size, spacing and a Reduce motion switch.
+- Parts of a long reply that are scrolled out of view aren't laid out until they're needed, so long replies stay smooth. Copy still copies the whole reply.
+
 ### Background music
 
 Background music is off until a visitor turns it on with the music note button at the top of the page, and the music file isn't downloaded before then. The page remembers their choice: if they turned it on, it starts again on their next visit at their first click, tap or key press (browsers don't allow sound before that). If they turn it off, it stays off.

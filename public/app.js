@@ -191,6 +191,7 @@ function follow(update) {
 // While a reply is being written, the send button becomes a stop button.
 function setBusy(value) {
   busy = value;
+  messagesEl.setAttribute("aria-busy", String(value));
   sendBtn.classList.toggle("stop", value);
   sendBtn.title = value ? "Stop" : "Send";
   sendBtn.setAttribute("aria-label", value ? "Stop the reply" : "Send");
@@ -553,6 +554,7 @@ async function answer(text, userRow, hooks = {}, attachments = []) {
           ended = finished = true;
           follow(() => renderer.finish(replyText));
           if (!replyText) answerEl.textContent = "(The model sent back an empty reply. Try asking again.)";
+          if (!hooks.onText) announce(`Farhan AI: ${shownText(answerEl)}`);
           save(data.content);
           break;
         } else if (event === "error") {
@@ -583,6 +585,7 @@ async function answer(text, userRow, hooks = {}, attachments = []) {
       } else {
         replyEl.classList.add("error");
         replyEl.textContent = `Error: ${message}`;
+        announce(`Error: ${message}`);
       }
       if (turn.chat === chatNumber) addRetry(turn);
     });
@@ -599,6 +602,25 @@ async function answer(text, userRow, hooks = {}, attachments = []) {
     if (!hooks.onText) input.focus();
   }
   return finished ? replyText : null;
+}
+
+// A reply's text as it reads on screen. Parts scrolled out of view aren't laid out (see
+// style.css), which would run their paragraphs together, so they're drawn for a moment first.
+function shownText(el) {
+  el.classList.add("drawn");
+  const text = el.innerText;
+  el.classList.remove("drawn");
+  return text;
+}
+
+// Screen readers hear each reply once, when it's finished, rather than every piece as it
+// streams in (which talks over itself). Long replies are cut short with a pointer to the rest.
+function announce(text) {
+  const el = document.getElementById("announcer");
+  if (!el) return;
+  const words = text.replace(/\s+/g, " ").trim();
+  el.textContent = "";
+  setTimeout(() => (el.textContent = words.length > 1200 ? `${words.slice(0, 1200)}… The full reply is in the conversation.` : words), 50);
 }
 
 // A short line under a reply that was stopped or cut off.
@@ -658,6 +680,13 @@ const FOLLOW_UPS = [
   { label: "Make a checklist", icon: "check", prompt: "Turn your last answer into a short checklist." },
 ];
 
+// Puts a Read aloud button back once reading stops.
+function unpress(b) {
+  b.setAttribute("aria-pressed", "false");
+  b.setAttribute("aria-label", "Read aloud");
+  b.title = "Read aloud";
+}
+
 // Copy, regenerate and more under each reply; copy and edit beside each message.
 function addActions(turn, replyText) {
   const { icon, toast, copyText, showMenu } = window.FarhanUI;
@@ -679,7 +708,23 @@ function addActions(turn, replyText) {
   bar.setAttribute("aria-label", "Reply actions");
   const answerEl = turn.replyRow.querySelector(".bubble > div:not(.sources)");
   bar.append(
-    button("Copy", "copy", () => copy(answerEl?.innerText.trim() || replyText, "Reply")),
+    button("Copy", "copy", () => copy((answerEl && shownText(answerEl).trim()) || replyText, "Reply")),
+    ...("speechSynthesis" in window
+      ? [
+          button("Read aloud", "volume", (b) => {
+            if (!window.FarhanVoice) return;
+            if (b.getAttribute("aria-pressed") === "true") {
+              window.FarhanVoice.stopReading();
+              return unpress(b);
+            }
+            document.querySelectorAll('.act[aria-pressed="true"]').forEach(unpress);
+            b.setAttribute("aria-pressed", "true");
+            b.setAttribute("aria-label", "Stop reading");
+            b.title = "Stop reading";
+            window.FarhanVoice.read(replyText, () => unpress(b));
+          }),
+        ]
+      : []),
     button("Regenerate", "shuffle", () => retryTurn(turn), "only-latest"),
     button("More actions", "more", (b) =>
       showMenu(

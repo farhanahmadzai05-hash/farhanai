@@ -86,6 +86,7 @@
 
     const dive = svg.cloneNode(true);
     dive.removeAttribute("id");
+    dive.querySelector("defs")?.remove(); // its strokes still use the original's gradient; ids stay unique
     dive.classList.add("dive");
     // Leave the soft glow behind: huge see-through strokes are what's slow to draw.
     dive.querySelectorAll(".glow").forEach((g) => g.remove());

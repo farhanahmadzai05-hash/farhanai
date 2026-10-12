@@ -80,7 +80,7 @@ async function key(keyName, modifiers = 0) {
 // The system prompt the fake AI received last.
 const lastSystem = () => fake.requests.at(-1).messages.find((m) => m.role === "system").content;
 const lastSent = () => fake.requests.at(-1).messages.filter((m) => m.role !== "system").map((m) => m.content);
-const menuItem = (label) => js(`(() => { const b = [...document.querySelectorAll('.menu [role="menuitem"]')].find((b) => b.textContent.trim().startsWith(${JSON.stringify(label)})); b.id = "menu-pick"; return true; })()`);
+const menuItem = (label) => js(`(() => { const b = [...document.querySelectorAll('.menu button')].find((b) => b.textContent.trim().startsWith(${JSON.stringify(label)})); b.id = "menu-pick"; return true; })()`);
 
 // ---------- Reply actions ----------
 
