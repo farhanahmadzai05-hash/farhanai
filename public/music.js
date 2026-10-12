@@ -5,10 +5,10 @@
 // ambient track that it composes live in the browser, so there's no audio
 // file and nothing to license.
 //
-// Music is on by default. The page tries to start it straight away; most
-// browsers block sound until the visitor interacts, so if that's blocked it
-// starts on their first click, tap, key press or when they focus the chat box.
-// Turning it off with the button is remembered.
+// Music is off until the visitor turns it on with the button; nothing plays (or
+// downloads) before that. Their choice is remembered: if they turned it on, it
+// starts again on their next visit at their first click, tap or key press (browsers
+// don't allow sound before that). Turning it off is remembered too.
 (() => {
   const button = document.getElementById("music");
   const STORAGE_KEY = "farhanai-music";
@@ -210,8 +210,9 @@
     }
   });
 
-  // Music is on unless the visitor turned it off before. Try to play right away,
-  // and if the browser blocks that, start at the visitor's first interaction.
+  // Music only plays if the visitor turned it on (now or on an earlier visit). On a
+  // later visit, try to play right away, and if the browser blocks that, start at
+  // the visitor's first interaction.
   const START_EVENTS = ["pointerdown", "keydown", "touchend", "focusin"];
   function startOnFirstInteraction() {
     waiting = true;
@@ -230,7 +231,7 @@
     START_EVENTS.forEach((t) => window.addEventListener(t, resume, true));
   }
 
-  if (remembered() !== "off") {
+  if (remembered() === "on") {
     show(true);
     waiting = true;
     turnOn().then((ok) => {
