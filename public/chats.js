@@ -74,7 +74,7 @@
     // Saves a chat's turns and returns its id (a new id the first time). Returns null when it
     // couldn't be saved, for example because the browser's storage is full.
     save(id, turns) {
-      if (!storageWorks) return null;
+      if (!storageWorks || window.FarhanSettings?.savingChats() === false) return null;
       const list = readIndex();
       let meta = id && list.find((m) => m.id === id);
       const now = Date.now();
@@ -250,6 +250,7 @@
       [
         { label: "Rename", icon: "pencil", action: () => rename(chat) },
         { label: chat.pinned ? "Unpin" : "Pin to top", icon: "pin", action: () => store.pin(chat.id, !chat.pinned) },
+        { label: "Export as Markdown", icon: "download", action: () => window.download?.(`${window.fileName(chat.title)}.md`, window.chatMarkdown(store.get(chat.id).turns, chat.title)) },
         { label: "Delete", icon: "trash", danger: true, action: () => remove(chat) },
       ],
       anchor,

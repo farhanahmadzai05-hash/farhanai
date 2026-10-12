@@ -405,6 +405,7 @@ async function answer(text, userRow, hooks = {}) {
   lastTurn?.replyRow.querySelector(".turn-actions")?.remove(); // only the newest message can be tried again
   const replyEl = addMessage("assistant");
   const turn = (lastTurn = { text, userRow, replyRow: replyEl.parentElement, saved: false, chat: chatNumber, sources: [] });
+  markLatest(turn);
   replyEl.parentElement.classList.add("streaming");
   const sourcesEl = document.createElement("div");
   sourcesEl.className = "sources";
@@ -460,6 +461,7 @@ async function answer(text, userRow, hooks = {}) {
       body: JSON.stringify({
         messages: [...history, { role: "user", content: text }],
         timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        preferences: window.FarhanSettings?.preferences(),
       }),
       signal: reply.controller.signal,
     });
@@ -546,6 +548,7 @@ async function answer(text, userRow, hooks = {}) {
   } finally {
     stopWaiting();
     turn.replyRow.classList.remove("streaming");
+    if (turn.chat === chatNumber && replyText) addActions(turn, replyText);
     if (current === reply) current = null;
     setBusy(false);
     if (!hooks.onText) input.focus();
@@ -570,18 +573,183 @@ function addRetry(turn) {
   button.type = "button";
   button.className = "retry";
   button.textContent = "Try again";
-  button.addEventListener("click", () => {
-    if (busy || turn !== lastTurn) return;
-    if (turn.saved) {
-      history.splice(-2, 2);
-      turns.pop();
-      persist();
-    }
-    turn.replyRow.remove();
-    answer(turn.text, turn.userRow);
-  });
+  button.addEventListener("click", () => retryTurn(turn));
   actions.appendChild(button);
   turn.replyRow.querySelector(".bubble").appendChild(actions);
+}
+
+// Asks for the newest reply again in place, without sending the message a second time.
+function retryTurn(turn) {
+  if (busy || turn !== lastTurn) return;
+  forgetTurn(turn);
+  turn.replyRow.remove();
+  answer(turn.text, turn.userRow);
+}
+// Takes the newest message and its reply out of the conversation (on screen they stay until
+// the caller removes them).
+function forgetTurn(turn) {
+  if (!turn.saved) return;
+  history.splice(-2, 2);
+  turns.pop();
+  turn.saved = false;
+  persist();
+}
+
+// Only the newest message can be edited and only the newest reply regenerated.
+function markLatest(turn) {
+  messagesEl.querySelectorAll(":scope > .row.latest").forEach((r) => r.classList.remove("latest"));
+  turn.userRow.classList.add("latest");
+  turn.replyRow.classList.add("latest");
+}
+
+// Follow-up actions send a visible new message, so it's clear what was asked.
+const FOLLOW_UPS = [
+  { label: "Continue", icon: "chat", prompt: "Continue your last answer from where it stopped." },
+  { label: "Simplify", icon: "bulb", prompt: "Explain your last answer more simply, as if to a beginner." },
+  { label: "Step by step", icon: "list", prompt: "Go through your last answer step by step." },
+  { label: "More technical", icon: "code", prompt: "Give a more technical, in-depth version of your last answer." },
+  { label: "Another way", icon: "shuffle", prompt: "Give a different approach or alternative to your last answer." },
+  { label: "Summarise", icon: "pen", prompt: "Summarise your last answer in three bullet points." },
+  { label: "Make a checklist", icon: "check", prompt: "Turn your last answer into a short checklist." },
+];
+
+// Copy, regenerate and more under each reply; copy and edit beside each message.
+function addActions(turn, replyText) {
+  const { icon, toast, copyText, showMenu } = window.FarhanUI;
+  const button = (label, iconName, onClick, cls = "") => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = `act ${cls}`;
+    b.title = label;
+    b.setAttribute("aria-label", label);
+    b.innerHTML = icon(iconName);
+    b.addEventListener("click", () => onClick(b));
+    return b;
+  };
+  const copy = async (text, what) => toast((await copyText(text)) ? `${what} copied` : "Your browser blocked copying", { kind: "info" });
+  turn.replyRow.querySelector(".msg-actions")?.remove();
+  const bar = document.createElement("div");
+  bar.className = "msg-actions";
+  bar.setAttribute("role", "toolbar");
+  bar.setAttribute("aria-label", "Reply actions");
+  const answerEl = turn.replyRow.querySelector(".bubble > div:not(.sources)");
+  bar.append(
+    button("Copy", "copy", () => copy(answerEl?.innerText.trim() || replyText, "Reply")),
+    button("Regenerate", "shuffle", () => retryTurn(turn), "only-latest"),
+    button("More actions", "more", (b) =>
+      showMenu(
+        [
+          { label: "Copy as Markdown", icon: "copy", action: () => copy(replyText, "Markdown") },
+          { label: "Download as Markdown", icon: "download", action: () => download(`farhan-ai-reply.md`, replyText) },
+          ...FOLLOW_UPS.map((f) => ({ label: f.label, icon: f.icon, action: () => !busy && send(f.prompt) })),
+        ],
+        b,
+        { label: "Reply actions" },
+      ),
+    ),
+  );
+  bar.lastChild.setAttribute("aria-haspopup", "menu");
+  turn.replyRow.querySelector(".bubble").appendChild(bar);
+
+  if (!turn.userRow.querySelector(".user-actions")) {
+    const mine = document.createElement("div");
+    mine.className = "user-actions";
+    mine.append(
+      button("Copy message", "copy", () => copy(turn.text, "Message")),
+      button("Edit and send again", "pencil", () => editTurn(turn), "only-latest"),
+    );
+    turn.userRow.prepend(mine);
+  }
+}
+
+// Edits the newest message in place; saving sends it again and replaces the old reply.
+function editTurn(turn) {
+  if (busy || turn !== lastTurn || turn.userRow.querySelector(".edit-box")) return;
+  const bubble = turn.userRow.querySelector(".bubble");
+  const box = document.createElement("div");
+  box.className = "edit-box";
+  const area = document.createElement("textarea");
+  area.value = turn.text;
+  area.setAttribute("aria-label", "Edit your message");
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "btn primary";
+  save.textContent = "Send";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "btn";
+  cancel.textContent = "Cancel";
+  const buttons = document.createElement("div");
+  buttons.className = "edit-buttons";
+  buttons.append(cancel, save);
+  box.append(area, buttons);
+  bubble.hidden = true;
+  turn.userRow.appendChild(box);
+  area.style.height = `${Math.min(area.scrollHeight + 4, innerHeight * 0.4)}px`;
+  area.focus();
+  const close = () => {
+    box.remove();
+    bubble.hidden = false;
+  };
+  cancel.addEventListener("click", close);
+  const submit = () => {
+    const text = area.value.trim();
+    if (!text || busy || turn !== lastTurn) return;
+    if (text.length > MAX_CHARS) return window.FarhanUI.toast("That message is too long.", { kind: "error" });
+    forgetTurn(turn);
+    turn.replyRow.remove();
+    turn.userRow.remove();
+    send(text);
+  };
+  save.addEventListener("click", submit);
+  area.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !touchKeyboard.matches) {
+      e.preventDefault();
+      submit();
+    } else if (e.key === "Escape") {
+      e.stopPropagation();
+      close();
+    }
+  });
+}
+
+// Saves text as a file in the visitor's Downloads.
+function download(name, text, type = "text/markdown") {
+  const url = URL.createObjectURL(new Blob([text], { type: `${type};charset=utf-8` }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  window.FarhanUI?.toast(`Saved ${name}`);
+}
+
+function exportCurrentChat() {
+  if (!turns.length) return;
+  const title = (chatId && window.FarhanChats?.get(chatId)?.title) || "Farhan AI chat";
+  download(`${fileName(title)}.md`, chatMarkdown(turns, title));
+}
+function exportAllChats() {
+  const chats = (window.FarhanChats?.list() || []).sort((a, b) => b.updated - a.updated);
+  if (!chats.length) return;
+  const text = chats.map((c) => chatMarkdown(window.FarhanChats.get(c.id).turns, c.title)).join("\n\n");
+  download(`farhan-ai-chats-${new Date().toISOString().slice(0, 10)}.md`, text);
+}
+function fileName(title) {
+  return title.replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-|-$/g, "").slice(0, 60).toLowerCase() || "farhan-ai-chat";
+}
+
+// The whole chat as Markdown, for exporting.
+function chatMarkdown(chatTurns, title = "Farhan AI chat") {
+  const parts = [`# ${title}`, ""];
+  for (const t of chatTurns) {
+    parts.push("**You:**", "", t.user, "", "**Farhan AI:**", "", t.reply);
+    if (t.note) parts.push("", `_(${t.note})_`);
+    parts.push("", "---", "");
+  }
+  return parts.join("\n");
 }
 
 form.addEventListener("submit", (e) => {
@@ -706,7 +874,11 @@ function openChat(id) {
     if (t.note) addNote(bubble, t.note, t.note !== "Stopped");
     history.push({ role: "user", content: t.user }, { role: "assistant", content: t.reply });
     turns.push(t);
+    const turn = { text: t.user, userRow: bubble.parentElement.previousElementSibling, replyRow: bubble.parentElement, saved: true, chat: chatNumber, sources: t.sources, record: t };
+    addActions(turn, t.reply);
+    lastTurn = turn;
   }
+  if (lastTurn) markLatest(lastTurn);
   following = true;
   scrollToEnd();
   window.dispatchEvent(new CustomEvent("farhanai-active-chat", { detail: chatId }));

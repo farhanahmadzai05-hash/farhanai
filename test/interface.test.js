@@ -338,7 +338,7 @@ test("chats can be renamed and pinned from their menu", async () => {
 test("deleting a chat asks first, and Cancel keeps it", async () => {
   await ask("Keep or delete");
   await click("#chat-list .chat-more");
-  await click('.menu [role="menuitem"]:nth-child(3)'); // Delete
+  await click('.menu [role="menuitem"].danger'); // Delete
   await page.waitFor(`document.querySelector("dialog.confirm[open]")`);
   assert.match(await js(`document.querySelector("dialog.confirm").textContent`), /Keep or delete/);
   assert.equal(await js(`document.activeElement.textContent`), "Cancel", "the safe choice has the focus");
@@ -347,7 +347,7 @@ test("deleting a chat asks first, and Cancel keeps it", async () => {
   assert.deepEqual(await chatTitles(), ["Keep or delete"]);
 
   await click("#chat-list .chat-more");
-  await click('.menu [role="menuitem"]:nth-child(3)');
+  await click('.menu [role="menuitem"].danger');
   await click('dialog.confirm [value="yes"]');
   await page.waitFor(`!document.querySelector("#chat-list .chat-title")`);
   assert.equal(await js(`messages.querySelectorAll(".row").length`), 0, "deleting the open chat starts a new one");
