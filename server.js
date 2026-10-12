@@ -117,6 +117,7 @@ const STATIC_FILES = {
   "/home.js": ["home.js", "text/javascript; charset=utf-8"],
   "/settings.js": ["settings.js", "text/javascript; charset=utf-8"],
   "/palette.js": ["palette.js", "text/javascript; charset=utf-8"],
+  "/composer.js": ["composer.js", "text/javascript; charset=utf-8"],
   // Optional: drop your own song into the public folder with one of these names.
   "/music.mp3": ["music.mp3", "audio/mpeg"],
   "/music.m4a": ["music.m4a", "audio/mp4"],
@@ -162,13 +163,13 @@ function checkModel() {
 }
 
 // Yields the reply from Ollama piece by piece.
-async function* streamOllama(messages, signal) {
+async function* streamOllama(messages, signal, model = MODEL) {
   let upstream;
   try {
     upstream = await fetch(`${OLLAMA_URL}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: MODEL, stream: true, messages }),
+      body: JSON.stringify({ model, stream: true, messages }),
       signal,
     });
   } catch (err) {
@@ -196,6 +197,47 @@ async function* streamOllama(messages, signal) {
 // available to your Groq account, the site switches to one of these by itself.
 const GROQ_PREFERRED = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
 let groqModel = MODEL;
+
+// Names shown in the model picker. Models not listed here show their id.
+const MODEL_LABELS = {
+  "openai/gpt-oss-120b": ["GPT-OSS 120B", "Most capable"],
+  "openai/gpt-oss-20b": ["GPT-OSS 20B", "Faster"],
+  "qwen/qwen3.8-27b": ["Qwen 3.8 27B", "Can read pictures"],
+  "llama-3.3-70b-versatile": ["Llama 3.3 70B", "Good all-rounder"],
+  "llama-3.1-8b-instant": ["Llama 3.1 8B", "Fastest, simplest"],
+};
+// Groq models that can read pictures (console.groq.com/docs/vision). Pictures are only offered
+// when the account actually lists one of them.
+const VISION_MODELS = ["qwen/qwen3.8-27b", "meta-llama/llama-4-scout-17b-16e-instruct", "meta-llama/llama-4-maverick-17b-128e-instruct"];
+
+// The models this server can really use: the ones Groq lists for this account (or Ollama has
+// downloaded) that we know how to chat with. Asking Groq for its model list is free and doesn't
+// count against the daily budget. Remembered for ten minutes.
+let modelList = null;
+let modelListAt = 0;
+async function availableModels() {
+  if (modelList && Date.now() - modelListAt < 10 * 60_000) return modelList;
+  let ids = [];
+  try {
+    if (ONLINE) {
+      const res = await fetch(`${GROQ_URL}/models`, { headers: { Authorization: `Bearer ${GROQ_API_KEY}` }, signal: AbortSignal.timeout(5000) });
+      const listed = ((await res.json().catch(() => ({}))).data || []).map((m) => m.id);
+      ids = [...GROQ_PREFERRED, ...VISION_MODELS].filter((id, i, all) => listed.includes(id) && all.indexOf(id) === i);
+    } else {
+      const res = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(5000) });
+      ids = ((await res.json().catch(() => ({}))).models || []).map((m) => m.name).filter((n) => !/embed/i.test(n));
+    }
+  } catch {}
+  const main = ONLINE ? groqModel : MODEL.includes(":") ? MODEL : `${MODEL}:latest`;
+  if (!ids.includes(main)) ids.unshift(main);
+  modelList = {
+    default: main,
+    models: ids.map((id) => ({ id, label: MODEL_LABELS[id]?.[0] || id, detail: MODEL_LABELS[id]?.[1] || "", pictures: ONLINE && VISION_MODELS.includes(id) })),
+  };
+  modelList.pictures = modelList.models.some((m) => m.pictures);
+  modelListAt = Date.now();
+  return modelList;
+}
 
 async function pickAvailableGroqModel() {
   const res = await fetch(`${GROQ_URL}/models`, {
@@ -292,13 +334,16 @@ async function* readGroq(res, call) {
 // anything is safe to replace with the next one; once words have reached the visitor, it isn't,
 // because trying again would repeat them.
 let toolsWork = true; // switched off if the model on this account can't use tools
-async function* streamGroq(messages, signal, tools) {
+// options.prefer: the model the visitor picked, tried first. options.only: the models allowed
+// to answer (for pictures, only ones that can read them).
+async function* streamGroq(messages, signal, tools, { prefer, only } = {}) {
   const extra = () => (tools && toolsWork ? { tools, tool_choice: "auto" } : {});
   const ready = (m) => !(busyUntil.get(m) > Date.now());
-  // The main model first, then the backups, skipping any that are busy right now.
-  const queue = [groqModel, ...GROQ_PREFERRED.filter((m) => m !== groqModel)];
+  // The visitor's choice, then the main model, then the backups, skipping any that are busy.
+  let queue = [prefer, groqModel, ...GROQ_PREFERRED].filter((m, i, all) => m && all.indexOf(m) === i);
+  if (only) queue = [...queue, ...only].filter((m, i, all) => only.includes(m) && all.indexOf(m) === i);
   let candidates = queue.filter(ready);
-  if (!candidates.length) candidates = [groqModel];
+  if (!candidates.length) candidates = queue.slice(0, 1);
   let problem = "down"; // why the last model failed: "down", "busy" or "slow"
   let waited = false;
   for (let i = 0; i < candidates.length; i++) {
@@ -314,7 +359,7 @@ async function* streamGroq(messages, signal, tools) {
         if (/model/i.test(detail) && /(not exist|not have access|decommissioned|deprecated|not found)/i.test(detail)) {
           call.done();
           rest(model, 3600);
-          if (model === groqModel) {
+          if (model === groqModel && !only) {
             const replacement = await pickAvailableGroqModel().catch(() => null);
             if (replacement && replacement !== groqModel) {
               console.log(`Groq model "${groqModel}" isn't available (${detail}). Switching to "${replacement}".`);
@@ -378,6 +423,7 @@ async function* streamGroq(messages, signal, tools) {
 
     // Groq has started answering.
     let started = false;
+    yield { model };
     try {
       for await (const part of readGroq(call.res, call)) {
         started = true;
@@ -549,6 +595,47 @@ const STYLE_RULES = {
 const LENGTH_RULES = { short: "Keep answers short.", normal: "", detailed: "Give detailed, thorough answers." };
 const TONE_RULES = { friendly: "Use a warm, friendly tone.", neutral: "", formal: "Use a formal, professional tone." };
 const FOCUS_RULES = { intuition: "Lead with intuition and plain-language explanations before any detail.", balanced: "", technical: "Prioritise technical detail over simplified explanations." };
+// Modes the visitor picks beside the message box. Each one changes how answers are approached.
+const MODE_RULES = {
+  general: "",
+  study:
+    "Study mode: act as a patient tutor. Explain the idea, check understanding with a short question, and when the visitor asks for practice give questions one at a time and mark their answers with feedback. For homework, guide them to the answer rather than only giving it, unless they ask for the full solution.",
+  code:
+    "Coding mode: act as a careful senior programmer. Give complete, runnable code in fenced blocks with the language name, explain the key decisions briefly, point out bugs, edge cases and security problems, and say how to run or test it. Don't invent library functions; say when you're unsure an API exists.",
+  maths:
+    "Maths mode: solve step by step with every step numbered and justified, write all maths in LaTeX, check the answer (substitute back or estimate) and state the final answer clearly. If the question is ambiguous, say which reading you used.",
+};
+
+// What can be attached to a message: up to 3 text files (their text is added to the message)
+// and up to 3 pictures (only for a model that can read them).
+const MAX_FILE_CHARS = 12_000; // all attached text together, to stay inside the free plan's per-minute allowance
+const MAX_PICTURES = 3;
+const MAX_PICTURE_CHARS = 1_500_000; // one picture as a data: address, about 1.1 MB
+function readAttachments(a) {
+  const out = { files: [], pictures: [] };
+  if (!a || typeof a !== "object") return out;
+  const files = Array.isArray(a.files) ? a.files : [];
+  const pictures = Array.isArray(a.pictures) ? a.pictures : [];
+  if (files.length > 3) throw new VisitorError("Please attach at most 3 files to one message.");
+  if (pictures.length > MAX_PICTURES) throw new VisitorError(`Please attach at most ${MAX_PICTURES} pictures to one message.`);
+  let chars = 0;
+  for (const f of files) {
+    if (!f || typeof f.text !== "string") throw new VisitorError("That file couldn't be read. Please attach it again.");
+    chars += f.text.length;
+    out.files.push({ name: clean(f.name, 100).replace(/`/g, "'") || "file", text: f.text });
+  }
+  if (chars > MAX_FILE_CHARS) {
+    throw new VisitorError(`The attached files are too long. Together they can have up to ${MAX_FILE_CHARS.toLocaleString("en-GB")} characters.`);
+  }
+  for (const p of pictures) {
+    if (typeof p !== "string" || p.length > MAX_PICTURE_CHARS || !/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(p)) {
+      throw new VisitorError("That picture couldn't be used. Please attach a PNG, JPEG, WebP or GIF picture under 1 MB.");
+    }
+    out.pictures.push(p);
+  }
+  return out;
+}
+
 const clean = (v, max) => (typeof v === "string" ? v.replace(/[\u0000-\u001f\u007f<>]/g, " ").replace(/\s+/g, " ").trim().slice(0, max) : "");
 function preferenceRules(p) {
   if (!p || typeof p !== "object") return "";
@@ -676,7 +763,8 @@ setInterval(() => {
   for (const [visitor, times] of recent) if (!times.some((t) => now - t < WINDOW_MS)) recent.delete(visitor);
 }, WINDOW_MS).unref();
 
-// Checks the request body and returns { messages, timeZone, preferences }, or throws a VisitorError.
+// Checks the request body and returns { messages, timeZone, preferences, mode, model, attachments },
+// or throws a VisitorError.
 // Only the new message has a length limit: earlier ones (including long answers) are cut down
 // later anyway, and refusing them would break a long conversation for good.
 const MAX_CHARS = 20_000;
@@ -687,7 +775,7 @@ function readChatRequest(raw) {
   } catch {
     throw new VisitorError("That message couldn't be read. Please reload the page and try again.");
   }
-  const { messages, timeZone, preferences } = body || {};
+  const { messages, timeZone, preferences, mode, model, attachments } = body || {};
   if (!Array.isArray(messages) || messages.length === 0) {
     throw new VisitorError("That conversation couldn't be read. Please start a new chat and try again.");
   }
@@ -701,8 +789,17 @@ function readChatRequest(raw) {
   if (last.content.length > MAX_CHARS) {
     throw new VisitorError(`That message is too long. Please keep it under ${MAX_CHARS.toLocaleString("en-GB")} characters.`);
   }
-  return { messages, timeZone: typeof timeZone === "string" ? timeZone.slice(0, 64) : undefined, preferences: preferenceRules(preferences) };
+  return {
+    messages,
+    timeZone: typeof timeZone === "string" ? timeZone.slice(0, 64) : undefined,
+    preferences: preferenceRules(preferences),
+    mode: typeof mode === "string" && Object.hasOwn(MODE_RULES, mode) ? MODE_RULES[mode] : "",
+    model: typeof model === "string" ? model.slice(0, 100) : "",
+    attachments: readAttachments(attachments),
+  };
 }
+
+const modelInfo = (id) => ({ id, label: MODEL_LABELS[id]?.[0] || id });
 
 const replyJson = (res, status, body, headers = {}) => {
   res.writeHead(status, { "Content-Type": "application/json", ...headers });
@@ -717,12 +814,24 @@ const replyJson = (res, status, body, headers = {}) => {
 //   error   -> {message}
 // Lines starting with ":" are keep-alive pings and carry nothing.
 async function handleChat(req, res) {
-  let messages, timeZone, preferences;
+  let messages, timeZone, preferences, mode, model, attachments;
   try {
-    ({ messages, timeZone, preferences } = readChatRequest(await readBody(req)));
+    ({ messages, timeZone, preferences, mode, model, attachments } = readChatRequest(await readBody(req)));
   } catch (err) {
     return replyJson(res, 400, { error: err instanceof VisitorError ? err.message : "That message couldn't be read. Please try again." });
   }
+  // Only a model this server really has can be picked; anything else means "the usual one".
+  // The list is only looked up when the visitor picked a model or attached pictures.
+  const pictures = attachments.pictures.length > 0;
+  const models = model || pictures ? await availableModels() : modelList || { models: [], pictures: false };
+  const picked = models.models.find((m) => m.id === model);
+  if (pictures && !models.pictures) {
+    return replyJson(res, 400, { error: "Pictures can't be read right now: none of this site's AI models can see pictures. Please describe it in words instead." });
+  }
+  const route = {
+    prefer: pictures && !picked?.pictures ? undefined : picked?.id,
+    only: pictures ? models.models.filter((m) => m.pictures).map((m) => m.id) : undefined,
+  };
 
   const visitor = visitorAddress(req);
   if (ONLINE && budgetSpent()) return replyJson(res, 503, { error: RESTING }, { "Retry-After": "3600" });
@@ -775,7 +884,18 @@ async function handleChat(req, res) {
       role: m.role === "assistant" ? "assistant" : "user",
       content: String(m.content ?? "").slice(0, 4000),
     }));
-    const system = [SYSTEM_PROMPT, FORMAT_RULES, timeNow(timeZone), ONLINE ? SEARCH_RULES : "", preferences].filter(Boolean).join("\n\n");
+    // Attached files are added to the newest message as text; pictures go alongside it.
+    const newest = convo.at(-1);
+    if (attachments.files.length) {
+      newest.content += attachments.files.map((f) => `\n\n[Attached file: ${f.name}]\n\`\`\`\`\n${f.text}\n\`\`\`\``).join("");
+    }
+    if (pictures) {
+      newest.content = [{ type: "text", text: newest.content }, ...attachments.pictures.map((url) => ({ type: "image_url", image_url: { url } }))];
+    }
+    const abilities = models.pictures
+      ? "Visitors can attach pictures and text files (with the paperclip button beside the message box), and you can read them."
+      : "Visitors can attach text files and you can read them. You can't see pictures on this site.";
+    const system = [SYSTEM_PROMPT, abilities, FORMAT_RULES, timeNow(timeZone), ONLINE ? SEARCH_RULES : "", mode, preferences].filter(Boolean).join("\n\n");
     const history = [{ role: "system", content: system }, ...convo];
     let full = "";
     let searches = 0;
@@ -785,13 +905,14 @@ async function handleChat(req, res) {
     // then let it answer from the results.
     for (let round = 0; round < 4; round++) {
       const canSearch = ONLINE && searches < MAX_SEARCHES;
-      const stream = ONLINE ? streamGroq(history, abort.signal, canSearch ? [WEB_SEARCH_TOOL] : null) : streamOllama(history, abort.signal);
+      const stream = ONLINE ? streamGroq(history, abort.signal, canSearch ? [WEB_SEARCH_TOOL] : null, route) : streamOllama(history, abort.signal, picked?.id);
       let toolCalls = null;
       let roundText = "";
       for await (const part of stream) {
         if (typeof part !== "string") {
           if (part.status) send("status", { text: part.status });
           if (part.toolCalls) toolCalls = part.toolCalls;
+          if (part.model) send("model", modelInfo(part.model));
           continue;
         }
         if (!full && !ONLINE) console.log(`First words arrived after ${((Date.now() - started) / 1000).toFixed(1)}s.`);
@@ -840,9 +961,10 @@ async function handleChat(req, res) {
         ? `Here is what the web search found:\n\n${found.join("\n\n---\n\n")}\n\nUsing these results, answer my last message now. Cite results like [1]. Don't search again.`
         : "Please answer my last message now.";
       const retry = [{ role: "system", content: system }, ...convo, { role: "user", content: nudge }];
-      for await (const part of streamGroq(retry, abort.signal, null)) {
+      for await (const part of streamGroq(retry, abort.signal, null, route)) {
         if (typeof part !== "string") {
           if (part.status) send("status", { text: part.status });
+          if (part.model) send("model", modelInfo(part.model));
           continue;
         }
         full += part;
@@ -871,6 +993,11 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && url.pathname === "/api/config") {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ appName: APP_NAME, welcome: WELCOME, creatorMessage: CREATOR_MESSAGE, model: MODEL, online: ONLINE }));
+  }
+  if (req.method === "GET" && url.pathname === "/api/models") {
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" });
+    const { default: main, models, pictures } = await availableModels();
+    return res.end(JSON.stringify({ default: main, models, pictures, maxFileChars: MAX_FILE_CHARS, maxPictures: MAX_PICTURES }));
   }
   if (req.method === "GET" && url.pathname === "/api/status") {
     res.writeHead(200, { "Content-Type": "application/json" });

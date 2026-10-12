@@ -140,9 +140,14 @@
 
             <form id="composer">
               <div class="bar">
+                <div class="attachments" id="attachments" aria-label="Attached" hidden></div>
                 <label class="visually-hidden" for="input">Message</label>
                 <textarea id="input" rows="1" placeholder="Ask Farhan AI anything…" autofocus enterkeyhint="send"></textarea>
                 <div class="bar-tools">
+                  <button id="attach" class="tool icon-only" type="button" title="Attach a text file" aria-label="Attach a text file">
+                    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 11.5l-8.2 8.2a5.3 5.3 0 0 1-7.5-7.5l8.6-8.6a3.5 3.5 0 0 1 5 5l-8.6 8.6a1.8 1.8 0 0 1-2.5-2.5l7.9-7.9"/></svg>
+                  </button>
+                  <input id="attach-input" type="file" multiple hidden>
                   <button id="talk" class="tool" type="button" title="Talk instead: opens voice mode">
                     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
                     <span>Voice</span>
@@ -151,6 +156,8 @@
                     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></svg>
                     <span>Balanced</span>
                   </button>
+                  <button id="mode-chip" class="tool" type="button" aria-haspopup="menu" aria-expanded="false"></button>
+                  <button id="model-chip" class="tool" type="button" aria-haspopup="menu" aria-expanded="false" hidden></button>
                   <span class="counter" id="counter" aria-live="polite" hidden></span>
                   <button id="send" type="submit" title="Send" aria-label="Send">
                     <svg class="icon send-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5.5 11.5L12 5l6.5 6.5"/></svg>
@@ -194,6 +201,7 @@
   <script src="/code.js"></script>
   <script src="/ui.js"></script>
   <script src="/app.js"></script>
+  <script src="/composer.js"></script>
   <script src="/chats.js"></script>
   <script src="/home.js"></script>
   <script src="/settings.js"></script>

@@ -1326,3 +1326,46 @@ body.entering form { animation: app-rise-in 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) 
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
   .row.streaming .bubble > div:last-child > :last-child::after { animation: none !important; }
 }
+
+/* ---------- Attachments, mode and model (composer.js) ---------- */
+.tool.icon-only { width: 32px; padding: 0; justify-content: center; }
+#mode-chip.on { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); color: var(--text); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+#model-chip span { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#composer.dropping .bar { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+.attachments { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 14px 0; }
+.attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+  min-height: 40px;
+  padding: 4px 6px 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+  font-size: 13px;
+  color: var(--text);
+}
+.attachment .icon { width: 18px; height: 18px; flex: none; color: var(--accent); }
+.attachment img { width: 32px; height: 32px; object-fit: cover; border-radius: 8px; flex: none; }
+.attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.attachment-size { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.attachment-remove {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--muted);
+}
+.attachment-remove:hover { background: var(--surface-3, var(--surface)); color: var(--text); }
+.attachment-remove .icon { width: 14px; height: 14px; color: inherit; }
+.sent-attachments { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; margin-top: 8px; }
+.sent-attachments .attachment { background: color-mix(in srgb, var(--surface) 70%, transparent); }
+.sent-attachments .attachment.picture { flex-direction: column; align-items: flex-start; padding: 6px; max-width: 220px; }
+.sent-attachments .attachment.picture img { width: auto; height: auto; max-width: 206px; max-height: 180px; }
+.answered-by { display: none; margin-left: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.many-models .answered-by { display: inline; }

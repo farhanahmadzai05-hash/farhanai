@@ -19,6 +19,12 @@
       { label: "Export this chat as Markdown", icon: "download", run: () => window.exportCurrentChat(), when: () => turns.length > 0 },
       ...["dark", "light", "system"].filter((m) => m !== theme.mode).map((m) => ({ label: `Theme: ${m[0].toUpperCase()}${m.slice(1)}`, icon: m === "dark" ? "moon" : m === "light" ? "sun" : "monitor", run: () => window.FarhanTheme.setMode(m) })),
       ...Object.entries(window.FarhanSettings.STYLES).map(([key, [label]]) => ({ label: `Answer style: ${label}`, icon: "sparkle", run: () => window.FarhanSettings.useStyle(key) })),
+      ...(window.FarhanComposer
+        ? Object.entries(window.FarhanComposer.MODES)
+            .filter(([key]) => key !== window.FarhanComposer.mode())
+            .map(([key, [label, iconName]]) => ({ label: `Mode: ${label}`, icon: iconName, run: () => window.FarhanComposer.setMode(key) }))
+        : []),
+      { label: window.FarhanComposer?.models().pictures ? "Attach a file or picture" : "Attach a text file", icon: "paperclip", run: () => document.getElementById("attach").click() },
       ...window.FarhanSettings.presets().map((p) => ({ label: `Use preset: ${p.label}`, icon: "pin", run: () => window.FarhanSettings.usePreset(p.id) })),
     ];
     if (voiceWorks) list.push({ label: "Voice mode", icon: "mic", run: () => window.FarhanPanels?.goTo(1) });

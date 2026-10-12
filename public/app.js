@@ -394,17 +394,50 @@ function failureMessage(err) {
 // Sends a message and shows the reply as it streams in.
 // hooks (used by voice mode): onText(chunk) for each piece of the reply, onStatus(message), onError(message).
 // Returns the full reply, or null if it was stopped or something went wrong.
-async function send(text, hooks = {}) {
+// attachments: text files and pictures from the message box (see composer.js).
+async function send(text, hooks = {}, attachments = []) {
   if (busy) return null;
-  const userRow = addMessage("user", text).parentElement;
-  return answer(text, userRow, hooks);
+  const bubble = addMessage("user", text);
+  showAttachments(bubble, attachments);
+  return answer(text, bubble.parentElement, hooks, attachments);
 }
 
+// Shows what was attached to a message, under its text.
+function showAttachments(bubble, items) {
+  if (!items?.length) return;
+  const list = document.createElement("div");
+  list.className = "sent-attachments";
+  for (const item of items) {
+    const chip = document.createElement("span");
+    chip.className = `attachment ${item.kind}`;
+    if (item.url) {
+      const img = document.createElement("img");
+      img.src = item.url;
+      img.alt = item.name;
+      chip.appendChild(img);
+    } else chip.innerHTML = window.FarhanUI.icon(item.kind === "picture" ? "image" : "file");
+    const name = document.createElement("span");
+    name.className = "attachment-name";
+    name.textContent = item.name;
+    chip.appendChild(name);
+    list.appendChild(chip);
+  }
+  bubble.appendChild(list);
+}
+
+// The text of attached files as it's kept in the conversation, so later questions can refer
+// back to it. (Pictures are only sent with the message they were attached to.)
+const attachedText = (items) =>
+  items
+    .filter((i) => i.kind === "file")
+    .map((f) => `\n\n[Attached file: ${f.name}]\n\`\`\`\`\n${f.text}\n\`\`\`\``)
+    .join("");
+
 // Gets and shows the reply to `text`, whose bubble is already on the page.
-async function answer(text, userRow, hooks = {}) {
+async function answer(text, userRow, hooks = {}, attachments = []) {
   lastTurn?.replyRow.querySelector(".turn-actions")?.remove(); // only the newest message can be tried again
   const replyEl = addMessage("assistant");
-  const turn = (lastTurn = { text, userRow, replyRow: replyEl.parentElement, saved: false, chat: chatNumber, sources: [] });
+  const turn = (lastTurn = { text, userRow, replyRow: replyEl.parentElement, saved: false, chat: chatNumber, sources: [], attachments, model: "" });
   markLatest(turn);
   replyEl.parentElement.classList.add("streaming");
   const sourcesEl = document.createElement("div");
@@ -438,9 +471,11 @@ async function answer(text, userRow, hooks = {}) {
   // Keeps this message and its reply in the conversation (unless a new chat has started since).
   const save = (content) => {
     if (turn.chat !== chatNumber) return;
-    history.push({ role: "user", content: text }, { role: "assistant", content });
+    const attached = attachedText(attachments);
+    history.push({ role: "user", content: text + attached }, { role: "assistant", content });
     turn.saved = true;
-    turn.record = { user: text, reply: content, sources: turn.sources, note: "" };
+    const files = attachments.map((a) => ({ kind: a.kind, name: a.name }));
+    turn.record = { user: text, reply: content, sources: turn.sources, note: "", files, attached, model: turn.model };
     turns.push(turn.record);
     persist();
   };
@@ -462,6 +497,14 @@ async function answer(text, userRow, hooks = {}) {
         messages: [...history, { role: "user", content: text }],
         timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         preferences: window.FarhanSettings?.preferences(),
+        mode: window.FarhanComposer?.mode(),
+        model: window.FarhanComposer?.model() || undefined,
+        attachments: attachments.length
+          ? {
+              files: attachments.filter((a) => a.kind === "file").map((f) => ({ name: f.name, text: f.text })),
+              pictures: attachments.filter((a) => a.kind === "picture").map((p) => p.url),
+            }
+          : undefined,
       }),
       signal: reply.controller.signal,
     });
@@ -500,6 +543,8 @@ async function answer(text, userRow, hooks = {}) {
           statusText = data.text;
           hooks.onStatus?.(data.text);
           if (!replyText) showWaiting();
+        } else if (event === "model") {
+          turn.model = String(data.label || data.id || "").slice(0, 60);
         } else if (event === "sources") {
           for (const r of data.results || []) if (safeUrl(r.url)) links[r.n] = safeUrl(r.url);
           turn.sources.push(data);
@@ -583,7 +628,7 @@ function retryTurn(turn) {
   if (busy || turn !== lastTurn) return;
   forgetTurn(turn);
   turn.replyRow.remove();
-  answer(turn.text, turn.userRow);
+  answer(turn.text, turn.userRow, {}, turn.attachments || []);
 }
 // Takes the newest message and its reply out of the conversation (on screen they stay until
 // the caller removes them).
@@ -649,6 +694,13 @@ function addActions(turn, replyText) {
     ),
   );
   bar.lastChild.setAttribute("aria-haspopup", "menu");
+  if (turn.model) {
+    const by = document.createElement("span");
+    by.className = "answered-by";
+    by.textContent = turn.model;
+    by.title = `Answered by ${turn.model}`;
+    bar.appendChild(by);
+  }
   turn.replyRow.querySelector(".bubble").appendChild(bar);
 
   if (!turn.userRow.querySelector(".user-actions")) {
@@ -699,7 +751,7 @@ function editTurn(turn) {
     forgetTurn(turn);
     turn.replyRow.remove();
     turn.userRow.remove();
-    send(text);
+    send(text, {}, turn.attachments || []);
   };
   save.addEventListener("click", submit);
   area.addEventListener("keydown", (e) => {
@@ -741,11 +793,18 @@ function fileName(title) {
   return title.replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-|-$/g, "").slice(0, 60).toLowerCase() || "farhan-ai-chat";
 }
 
+// Reads attached files back out of the text kept with a saved message.
+function filesFrom(attached) {
+  return [...attached.matchAll(/\[Attached file: ([^\]\n]*)\]\n````\n([\s\S]*?)\n````/g)].map((m) => ({ kind: "file", name: m[1], text: m[2] }));
+}
+
 // The whole chat as Markdown, for exporting.
 function chatMarkdown(chatTurns, title = "Farhan AI chat") {
   const parts = [`# ${title}`, ""];
   for (const t of chatTurns) {
-    parts.push("**You:**", "", t.user, "", "**Farhan AI:**", "", t.reply);
+    parts.push("**You:**", "", t.user);
+    if (t.files?.length) parts.push("", `_Attached: ${t.files.map((f) => f.name).join(", ")}_`);
+    parts.push("", "**Farhan AI:**", "", t.reply);
     if (t.note) parts.push("", `_(${t.note})_`);
     parts.push("", "---", "");
   }
@@ -754,15 +813,18 @@ function chatMarkdown(chatTurns, title = "Farhan AI chat") {
 
 form.addEventListener("submit", (e) => {
   e.preventDefault();
-  const text = input.value.trim();
-  if (!text || busy) return; // while a reply is being written, keep what's typed for later
+  const hasFiles = window.FarhanComposer?.hasAttachments();
+  let text = input.value.trim();
+  if ((!text && !hasFiles) || busy) return; // while a reply is being written, keep what's typed for later
   if (text.length > MAX_CHARS) {
     window.FarhanUI?.toast(`That message is too long. Please keep it under ${MAX_CHARS.toLocaleString("en-GB")} characters.`, { kind: "error" });
     return;
   }
+  const attachments = window.FarhanComposer?.take() || [];
+  if (!text) text = attachments.some((a) => a.kind === "picture") ? "What's in this picture?" : "Please read the attached file.";
   input.value = "";
   composerChanged();
-  send(text);
+  send(text, {}, attachments);
 });
 
 // While a reply is being written, the send button stops it instead.
@@ -794,7 +856,7 @@ function composerChanged() {
   counterEl.hidden = n < MAX_CHARS * 0.75;
   counterEl.textContent = `${n.toLocaleString("en-GB")} / ${MAX_CHARS.toLocaleString("en-GB")}`;
   counterEl.classList.toggle("over", n > MAX_CHARS);
-  form.classList.toggle("has-text", !!input.value.trim());
+  form.classList.toggle("has-text", !!input.value.trim() || !!window.FarhanComposer?.hasAttachments());
   clearTimeout(draftTimer);
   draftTimer = setTimeout(() => {
     try {
@@ -804,6 +866,7 @@ function composerChanged() {
   }, 300);
 }
 input.addEventListener("input", composerChanged);
+window.addEventListener("farhanai-attachments", composerChanged);
 try {
   const draft = localStorage.getItem(DRAFT_KEY);
   if (draft && !input.value) {
@@ -856,7 +919,7 @@ function openChat(id) {
   clearChat();
   chatId = id;
   for (const t of chat.turns) {
-    addMessage("user", t.user);
+    showAttachments(addMessage("user", t.user), t.files);
     const bubble = addMessage("assistant");
     const links = {};
     if (t.sources.length) {
@@ -872,9 +935,11 @@ function openChat(id) {
     bubble.appendChild(answerEl);
     streamRenderer(answerEl, links).finish(t.reply);
     if (t.note) addNote(bubble, t.note, t.note !== "Stopped");
-    history.push({ role: "user", content: t.user }, { role: "assistant", content: t.reply });
+    history.push({ role: "user", content: t.user + (t.attached || "") }, { role: "assistant", content: t.reply });
     turns.push(t);
-    const turn = { text: t.user, userRow: bubble.parentElement.previousElementSibling, replyRow: bubble.parentElement, saved: true, chat: chatNumber, sources: t.sources, record: t };
+    // Attached files are sent again if this message is regenerated; pictures aren't kept.
+    const attachments = (t.files || []).filter((f) => f.kind === "file").length && t.attached ? filesFrom(t.attached) : [];
+    const turn = { text: t.user, userRow: bubble.parentElement.previousElementSibling, replyRow: bubble.parentElement, saved: true, chat: chatNumber, sources: t.sources, record: t, attachments, model: t.model || "" };
     addActions(turn, t.reply);
     lastTurn = turn;
   }

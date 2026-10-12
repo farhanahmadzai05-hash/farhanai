@@ -3,7 +3,7 @@
 //
 // Storage: "farhanai-chats" holds the list (id, title, times, pinned) and each chat's messages
 // are under "farhanai-chat:<id>", so saving one chat never rewrites the others. A chat's turns
-// are { user, reply, sources, note }, the same shape app.js shows on screen.
+// are { user, reply, sources, note, files, attached, model }, the same shape app.js shows on screen.
 (() => {
   const INDEX_KEY = "farhanai-chats";
   const CHAT_KEY = (id) => `farhanai-chat:${id}`;
@@ -32,6 +32,13 @@
       reply: str(t.reply),
       sources: Array.isArray(t.sources) ? t.sources.filter((s) => s && typeof s === "object").slice(0, 5) : [],
       note: str(t.note, 300),
+      // Names of what was attached (pictures themselves aren't kept: they're too big), the text
+      // of attached files as it was sent, and which model answered.
+      files: Array.isArray(t.files)
+        ? t.files.filter((f) => f && ["file", "picture"].includes(f.kind)).slice(0, 6).map((f) => ({ kind: f.kind, name: str(f.name, 100) }))
+        : [],
+      attached: str(t.attached, 14_000),
+      model: str(t.model, 60),
     };
   }
 
