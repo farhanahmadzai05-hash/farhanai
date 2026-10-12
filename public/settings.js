@@ -88,11 +88,12 @@
     showMenu(
       [
         ...Object.entries(STYLES).map(([key, [label]]) => ({
-          label: `${label}${!profile.preset && profile.style === key ? " ✓" : ""}`,
+          label,
+          checked: !profile.preset && profile.style === key,
           icon: "sparkle",
           action: () => useStyle(key),
         })),
-        ...presets.map((p) => ({ label: `${p.label}${profile.preset === p.id ? " ✓" : ""}`, icon: "pin", action: () => usePreset(p) })),
+        ...presets.map((p) => ({ label: p.label, checked: profile.preset === p.id, icon: "pin", action: () => usePreset(p) })),
         { label: "Customise…", icon: "gear", action: () => open("assistant") },
       ],
       chip,
@@ -104,13 +105,14 @@
   const SECTIONS = [
     ["appearance", "Appearance", "palette"],
     ["assistant", "Assistant", "sparkle"],
+    ["voice", "Voice", "volume"],
     ["chats", "Chats & privacy", "chat"],
     ["shortcuts", "Shortcuts", "keyboard"],
-  ];
+  ].filter(([key]) => key !== "voice" || "speechSynthesis" in window);
   let dialog = null;
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const radios = (name, options, current) =>
-    `<div class="segmented wide" role="radiogroup">${Object.entries(options)
+    `<div class="segmented wide" role="radiogroup">${(Array.isArray(options) ? options : Object.entries(options))
       .map(([v, label]) => `<label><input type="radio" name="${name}" value="${v}"${v === current ? " checked" : ""}><span>${esc(label)}</span></label>`)
       .join("")}</div>`;
   const field = (label, control, hint = "") => `<div class="field"><div class="field-label">${label}</div>${control}${hint ? `<p class="field-hint">${hint}</p>` : ""}</div>`;
@@ -163,6 +165,25 @@
       `<button type="button" class="link-btn" data-action="reset-assistant">Reset to the defaults</button>`
     );
   }
+  // The voices are the ones this device and browser provide, so the list differs between devices.
+  function voiceHtml() {
+    const v = window.FarhanVoice;
+    if (!v) return `<p class="field-hint">Voice isn't available in this browser.</p>`;
+    const { name, rate, current } = v.prefs();
+    const voices = v.voices().sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
+    return (
+      field(
+        "Voice",
+        `<select class="text" name="voice-name" aria-label="Voice"><option value="">Automatic${!name && current ? ` (${esc(current)})` : ""}</option>${voices
+          .map((x) => `<option value="${esc(x.name)}"${x.name === name ? " selected" : ""}>${esc(x.name)} · ${esc(x.lang)}</option>`)
+          .join("")}</select>`,
+        voices.length ? "These are the voices your device provides." : "Your device hasn't listed any voices yet. Try again in a moment.",
+      ) +
+      field("Speed", radios("voice-rate", Object.entries(v.RATES).sort((a, b) => a[0] - b[0]), String(rate))) +
+      `<button type="button" class="btn" data-action="test-voice">${icon("volume")}Play a sample</button>` +
+      `<p class="field-hint">Used by voice mode and by Read aloud under each reply. ${v.canListen ? "" : "This browser can't listen, so voice mode needs Chrome, Edge or Safari, but Read aloud works here."}</p>`
+    );
+  }
   function chatsHtml() {
     const saving = read(SAVE_KEY, true) !== false;
     const count = window.FarhanChats?.list().length || 0;
@@ -170,7 +191,7 @@
       `<label class="check"><input type="checkbox" name="save-chats"${saving ? " checked" : ""}> Save my chats in this browser</label>` +
       `<p class="field-hint">Chats are kept only on this device, in this browser. They aren't sent to a server for storage and don't sync to your other devices. Turn this off on a shared computer.</p>` +
       field("Saved chats", `<p class="field-hint">${count} saved chat${count === 1 ? "" : "s"}.</p><div class="row-buttons"><button type="button" class="btn" data-action="export-chats"${count ? "" : " disabled"}>${icon("download")}Export all as Markdown</button><button type="button" class="btn danger-outline" data-action="delete-chats"${count ? "" : " disabled"}>${icon("trash")}Delete all chats</button></div>`) +
-      field("What's sent to the AI", `<p class="field-hint">Your messages in the open chat (the latest 12), your time zone, and your Assistant settings. Online, Farhan AI uses Groq to write answers and may search the web for current facts.</p>`)
+      field("What's sent to the AI", `<p class="field-hint">Your messages in the open chat (the latest 12), any files or pictures you attach to a message, your time zone, your Assistant settings, the mode and the model you picked. Online, Farhan AI uses Groq to write answers and may search the web for current facts. Nothing is stored on the server.</p>`)
     );
   }
   function shortcutsHtml() {
@@ -178,7 +199,7 @@
     const rows = window.FarhanShortcuts?.list(mod) || [];
     return `<table class="shortcuts"><tbody>${rows.map(([keys, what]) => `<tr><td>${keys.map((k) => `<kbd>${esc(k)}</kbd>`).join(" ")}</td><td>${esc(what)}</td></tr>`).join("")}</tbody></table>`;
   }
-  const RENDER = { appearance: appearanceHtml, assistant: assistantHtml, chats: chatsHtml, shortcuts: shortcutsHtml };
+  const RENDER = { appearance: appearanceHtml, assistant: assistantHtml, voice: voiceHtml, chats: chatsHtml, shortcuts: shortcutsHtml };
 
   function show(section) {
     dialog.querySelectorAll(".settings-nav button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.section === section)));
@@ -219,6 +240,8 @@
       else if (name === "theme-accent") window.FarhanTheme.setAccent(value);
       else if (name?.startsWith("look-")) window.FarhanTheme.setLook(name.slice(5), value);
       else if (name === "save-chats") write(SAVE_KEY, checked);
+      else if (name === "voice-name") window.FarhanVoice?.set("name", value);
+      else if (name === "voice-rate") window.FarhanVoice?.set("rate", value);
       else if (["style", "length", "tone", "focus"].includes(name)) {
         profile = clean({ ...profile, [name]: value, preset: "" });
         changed();
@@ -267,6 +290,8 @@
         changed();
         show("assistant");
         toast("Assistant settings reset");
+      } else if (action === "test-voice") {
+        window.FarhanVoice?.read("Hi, I'm Farhan AI. This is how I sound.");
       } else if (action === "export-chats") {
         window.exportAllChats?.();
       } else if (action === "delete-chats") {

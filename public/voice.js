@@ -32,16 +32,32 @@
     window.dispatchEvent(new CustomEvent("farhanai-duck", { detail: next !== "idle" && next !== "error" }));
   }
 
-  if (!Recognition || !synth) {
-    setState("error", "Voice needs Chrome, Edge or Safari. Try opening the site in one of those.");
+  const NO_VOICE = "Voice needs Chrome, Edge or Safari. Try opening the site in one of those.";
+  if (!synth) {
+    setState("error", NO_VOICE);
     orb.disabled = true;
     return;
   }
+  // Without speech recognition (Firefox) the orb can't listen, but replies can still be read aloud.
+  const canListen = !!Recognition;
 
-  // Pick a natural-sounding English voice when one is available.
+  // The visitor's voice and speed (Settings > Voice), kept in this browser.
+  const VOICE_KEY = "farhanai-voice";
+  const RATES = { 0.85: "Slower", 1: "Normal", 1.2: "Faster", 1.4: "Fastest" };
+  let prefs = { name: "", rate: 1 };
+  try {
+    const saved = JSON.parse(localStorage.getItem(VOICE_KEY) || "{}") || {};
+    if (typeof saved.name === "string") prefs.name = saved.name.slice(0, 200);
+    if (Object.hasOwn(RATES, saved.rate)) prefs.rate = Number(saved.rate);
+  } catch {}
+
+  // The chosen voice if this device has it, otherwise a natural-sounding English one.
   let voice = null;
   function pickVoice() {
-    const voices = synth.getVoices().filter((v) => /^en(-|_|$)/i.test(v.lang));
+    const all = synth.getVoices();
+    const chosen = prefs.name && all.find((v) => v.name === prefs.name);
+    if (chosen) return (voice = chosen);
+    const voices = all.filter((v) => /^en(-|_|$)/i.test(v.lang));
     const prefer = [/natural/i, /google uk english male/i, /google us english/i, /daniel/i, /samantha/i, /google/i];
     voice = prefer.map((re) => voices.find((v) => re.test(v.name))).find(Boolean) || voices[0] || null;
   }
@@ -111,7 +127,7 @@
       if (!words || id !== session) return;
       const u = new SpeechSynthesisUtterance(words);
       if (voice) u.voice = voice;
-      u.rate = 1.03;
+      u.rate = 1.03 * prefs.rate;
       pending++;
       u.onstart = () => id === session && setState("speaking");
       u.onend = u.onerror = () => {
@@ -305,6 +321,7 @@
 
   orb.addEventListener("click", () => {
     if (state === "idle" || state === "error") {
+      stopReading();
       synth.cancel();
       // iPhones and iPads only allow speech that starts from a tap, so say nothing once now to unlock it.
       if (/iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform))) {
@@ -322,12 +339,60 @@
   window.addEventListener("farhanai-panel", (e) => e.detail !== "voice" && state !== "idle" && state !== "error" && stopAll());
   window.addEventListener("farhanai-new-chat", () => {
     stopAll();
+    stopReading();
     heardEl.textContent = "";
     replyEl.textContent = "";
   });
-  window.addEventListener("pagehide", stopAll);
+  window.addEventListener("pagehide", () => (stopAll(), stopReading()));
 
-  setState("idle");
+  // ---------- Reading a reply aloud from the chat ----------
+  // Long text is split into sentences: some browsers stop a single long utterance part way.
+  let reading = 0; // bumps to cancel the reply being read
+  function read(text, onEnd) {
+    if (state !== "idle" && state !== "error") stopAll();
+    stopReading();
+    const id = ++reading;
+    const parts = speakable(text).match(/[^.!?]+[.!?]*\s*/g) || [];
+    if (!parts.length) return onEnd?.();
+    let left = parts.length;
+    for (const part of parts) {
+      const u = new SpeechSynthesisUtterance(part.trim());
+      if (voice) u.voice = voice;
+      u.rate = 1.03 * prefs.rate;
+      u.onend = u.onerror = () => id === reading && --left === 0 && ((reading = 0), onEnd?.());
+      synth.speak(u);
+    }
+  }
+  function stopReading() {
+    if (!reading) return;
+    reading = 0;
+    synth.cancel();
+  }
+
+  window.FarhanVoice = {
+    canListen,
+    RATES,
+    voices: () => synth.getVoices().map((v) => ({ name: v.name, lang: v.lang })),
+    prefs: () => ({ ...prefs, current: voice?.name || "" }),
+    set(key, value) {
+      if (key === "name" && typeof value === "string") prefs.name = value.slice(0, 200);
+      else if (key === "rate" && Object.hasOwn(RATES, value)) prefs.rate = Number(value);
+      else return;
+      try {
+        localStorage.setItem(VOICE_KEY, JSON.stringify(prefs));
+      } catch {}
+      pickVoice();
+    },
+    read,
+    stopReading,
+    isReading: () => reading !== 0,
+  };
+
+  if (canListen) setState("idle");
+  else {
+    setState("error", `${NO_VOICE} You can still have replies read aloud from the chat.`);
+    orb.disabled = true;
+  }
   // Brave pretends to support speech recognition but blocks it, so warn straight away.
   navigator.brave?.isBrave?.().then((yes) => yes && setState("error", ERRORS.service));
 })();

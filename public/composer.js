@@ -42,7 +42,7 @@
   }
   modeChip.addEventListener("click", () =>
     showMenu(
-      Object.entries(MODES).map(([key, [label, iconName]]) => ({ label: `${label}${key === mode ? " ✓" : ""}`, icon: iconName, action: () => setMode(key) })),
+      Object.entries(MODES).map(([key, [label, iconName]]) => ({ label, checked: key === mode, icon: iconName, action: () => setMode(key) })),
       modeChip,
       { label: "Mode" },
     ),
@@ -72,9 +72,10 @@
     const usual = models.models.find((m) => m.id === models.default);
     showMenu(
       [
-        { label: `Auto${usual ? ` (${usual.label})` : ""}${!model ? " ✓" : ""}`, icon: "sparkle", action: () => setModel("") },
+        { label: `Auto${usual ? ` (${usual.label})` : ""}`, checked: !model, icon: "sparkle", action: () => setModel("") },
         ...models.models.map((m) => ({
-          label: `${m.label}${m.detail ? ` · ${m.detail}` : ""}${m.id === model ? " ✓" : ""}`,
+          label: `${m.label}${m.detail ? ` · ${m.detail}` : ""}`,
+          checked: m.id === model,
           icon: m.pictures ? "image" : "cpu",
           action: () => setModel(m.id),
         })),
