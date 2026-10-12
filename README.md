@@ -58,7 +58,15 @@ Open **`settings.json`** with Notepad (right-click it, then **Open with**, then 
 
 Save the file, close the black window, and start the app again to see your changes. Keep the quotes and commas as they are. If the app says it had a problem reading settings.json, a quote or comma is probably missing.
 
-The logo is `public/icon.svg` (the page) and `public/favicon.ico` (the desktop shortcut).
+The logo is `public/icon.svg` (the browser tab) and `public/favicon.ico` (older browsers and desktop shortcuts). The mark is a triangle with a point of light inside, taken from the A on the intro screen.
+
+### Themes and saved chats
+
+- **Appearance**: the palette button at the top switches between Dark (the default), Light and System (follows the device), and picks one of five accent colours. The choice is kept in that browser.
+- **Saved chats**: every conversation is saved in the visitor's own browser (local storage) and listed in the sidebar, grouped by date. Chats can be searched (titles and messages), renamed, pinned to the top and deleted (with a confirmation). Nothing is stored on the server and chats don't sync between devices or browsers. Clearing the browser's site data removes them, and **Delete all chats** at the bottom of the sidebar does the same on purpose. If the browser's storage is full, the chat still works and says it isn't being saved.
+- **Home screen**: a new chat shows a greeting, four suggestions (they change slowly, and **Shuffle** picks new ones) and quick actions. A suggestion with a complete question sends it; one marked "You add details" puts a starter in the message box for you to finish.
+- **Message box**: Enter sends and Shift+Enter starts a new line (on phones, Enter starts a new line and the arrow button sends). An unsent message is kept if the page is closed. The length shows only when it's close to the 20,000-character limit.
+- **Code in answers** gets a language label, colours, a **Copy** button, line numbers for longer blocks and **Collapse** for very long ones. The colouring is done by `public/code.js` with no extra library.
 
 ### Live web search, pictures and today's date
 
@@ -128,7 +136,8 @@ The limits above are counted per visitor address. Online, the server sits behind
 ## How it works
 
 - `server.js` serves the chat page and passes your conversation to Ollama's local API, streaming the reply back as it's written. It has no dependencies, so there's no `npm install` step.
-- `public/app.js` keeps the conversation in the browser, shows replies as they stream in, and supports "New chat". While a reply is being written, the send button becomes a **Stop** button. A reply that is stopped or cut off keeps the words that arrived and says so, and the newest one has a **Try again** button that asks again without sending your message twice. The conversation is kept only in that browser tab, so reloading the page starts a new chat.
+- `public/app.js` keeps the conversation in the browser, shows replies as they stream in, and supports "New chat". While a reply is being written, the send button becomes a **Stop** button. A reply that is stopped or cut off keeps the words that arrived and says so, and the newest one has a **Try again** button that asks again without sending your message twice.
+- `public/chats.js` saves chats in the browser and draws the sidebar, `public/home.js` the home screen, `public/ui.js` menus, dialogs, toasts and the Appearance menu, `public/code.js` code blocks, and `public/theme.js` applies the theme before the page is drawn. The colours, type and spacing are variables at the top of `public/style.css`, which is how the light theme and accent colours change everything at once.
 - Online, the same server talks to Groq's API instead (when `GROQ_API_KEY` is set). `render.yaml` describes the Render setup.
 - `npm test` checks the server against a fake Ollama and a fake Groq. It also opens the chat page in a hidden Chrome, Chromium or Edge window to test what a visitor sees (stopping, trying again, citations, scrolling). Those browser tests need Node 22 or newer and one of those browsers; without them they are skipped and the reason is shown. Set `CHROME_PATH` if your browser is somewhere unusual.
 - `npm run bench:streaming` measures how smoothly the page draws a long streamed reply on a slowed-down CPU. See [docs/notes/streaming-rendering.md](docs/notes/streaming-rendering.md).
