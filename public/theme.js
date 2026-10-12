@@ -35,9 +35,38 @@
   apply();
   if (read("farhanai-sidebar", ["collapsed", "open"], "open") === "collapsed") root.classList.add("side-collapsed");
 
+  // Text size, message width, spacing, motion and the background light (Settings > Appearance).
+  const LOOK = {
+    text: ["small", "default", "large"],
+    width: ["narrow", "default", "wide"],
+    density: ["comfortable", "compact"],
+    motion: ["system", "reduce"],
+    ambient: ["on", "off"],
+  };
+  let look = {};
+  try {
+    look = JSON.parse(localStorage.getItem("farhanai-look") || "{}") || {};
+  } catch {}
+  function applyLook() {
+    for (const [key, allowed] of Object.entries(LOOK)) {
+      if (!allowed.includes(look[key])) look[key] = allowed[0] === "small" ? "default" : allowed[0];
+      root.dataset[key] = look[key];
+    }
+  }
+  applyLook();
+
   window.FarhanTheme = {
     MODES,
     ACCENTS,
+    LOOK,
+    look: () => ({ ...look }),
+    setLook(key, value) {
+      if (!LOOK[key]?.includes(value)) return;
+      look[key] = value;
+      write("farhanai-look", JSON.stringify(look));
+      applyLook();
+      window.dispatchEvent(new CustomEvent("farhanai-theme", { detail: this.get() }));
+    },
     get: () => ({ mode, accent, theme: root.dataset.theme }),
     setMode(next) {
       if (!MODES.includes(next)) return;
