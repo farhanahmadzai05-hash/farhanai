@@ -19,16 +19,16 @@ function freePort() {
 }
 
 // A fake Groq. handler(body, res, n) answers the n-th chat request; every request body is kept
-// in `requests`. Returns { url, requests, close() }.
+// in `requests`. Set `models` to the model ids it should list. Returns { url, requests, close() }.
 export async function startFakeGroq(handler) {
-  const fake = { requests: [] };
+  const fake = { requests: [], models: [] }; // models: the ids GET /models lists
   const sockets = new Set();
   const server = http.createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
     if (req.url.endsWith("/models")) {
       res.writeHead(200, { "Content-Type": "application/json" });
-      return res.end(JSON.stringify({ data: [] }));
+      return res.end(JSON.stringify({ data: fake.models.map((id) => ({ id })) }));
     }
     const body = raw ? JSON.parse(raw) : {};
     fake.requests.push(body);
