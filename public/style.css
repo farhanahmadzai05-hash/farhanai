@@ -248,6 +248,27 @@ textarea::placeholder { color: var(--muted); }
 #send:hover { transform: scale(1.06); }
 #send:active { transform: scale(0.94); }
 #send:disabled { opacity: 0.35; cursor: default; transform: none; }
+#send .stop-icon, #send.stop .send-icon { display: none; }
+#send.stop .stop-icon { display: block; }
+#send .stop-icon rect { fill: currentColor; stroke: none; }
+#send:focus-visible, .retry:focus-visible { outline: 2px solid #a5b8ff; outline-offset: 2px; }
+
+/* A reply that was stopped or cut off, and its Try again button */
+.turn-note { margin-top: 8px; font-size: 13px; color: var(--muted); }
+.turn-note.problem { color: var(--error); }
+.turn-actions { margin-top: 8px; }
+.retry {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.retry:hover { border-color: rgba(139, 92, 246, 0.6); }
+.retry:disabled { opacity: 0.5; cursor: default; }
 .hint { text-align: center; font-size: 12px; color: var(--muted); margin: 8px 0 0; }
 
 /* Phones */
